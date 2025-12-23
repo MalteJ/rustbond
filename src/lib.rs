@@ -74,6 +74,8 @@ pub use types::{
     Action, ConnectionState, Destination, IpVersion, NextHop, NextHopType, Vni,
 };
 
+use std::sync::Arc;
+
 /// Result type for MetalBond operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -84,4 +86,14 @@ pub trait RouteHandler: Send + Sync + 'static {
 
     /// Called when a route is removed.
     fn remove_route(&self, vni: Vni, route: Route);
+}
+
+impl<T: RouteHandler> RouteHandler for Arc<T> {
+    fn add_route(&self, vni: Vni, route: Route) {
+        (**self).add_route(vni, route)
+    }
+
+    fn remove_route(&self, vni: Vni, route: Route) {
+        (**self).remove_route(vni, route)
+    }
 }

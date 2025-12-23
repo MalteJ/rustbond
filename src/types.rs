@@ -363,3 +363,361 @@ impl std::fmt::Display for ConnectionState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    // Vni tests
+    #[test]
+    fn test_vni_from_u32() {
+        let vni: Vni = 100u32.into();
+        assert_eq!(vni.0, 100);
+    }
+
+    #[test]
+    fn test_vni_into_u32() {
+        let vni = Vni(200);
+        let val: u32 = vni.into();
+        assert_eq!(val, 200);
+    }
+
+    #[test]
+    fn test_vni_display() {
+        let vni = Vni(12345);
+        assert_eq!(format!("{}", vni), "12345");
+    }
+
+    #[test]
+    fn test_vni_hash() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(Vni(100));
+        set.insert(Vni(100));
+        set.insert(Vni(200));
+        assert_eq!(set.len(), 2);
+    }
+
+    // IpVersion tests
+    #[test]
+    fn test_ip_version_from_proto() {
+        assert_eq!(IpVersion::from(proto::IpVersion::IPv4), IpVersion::V4);
+        assert_eq!(IpVersion::from(proto::IpVersion::IPv6), IpVersion::V6);
+    }
+
+    #[test]
+    fn test_ip_version_to_proto() {
+        assert_eq!(proto::IpVersion::from(IpVersion::V4), proto::IpVersion::IPv4);
+        assert_eq!(proto::IpVersion::from(IpVersion::V6), proto::IpVersion::IPv6);
+    }
+
+    // Action tests
+    #[test]
+    fn test_action_from_proto() {
+        assert_eq!(Action::from(proto::Action::Add), Action::Add);
+        assert_eq!(Action::from(proto::Action::Remove), Action::Remove);
+    }
+
+    #[test]
+    fn test_action_to_proto() {
+        assert_eq!(proto::Action::from(Action::Add), proto::Action::Add);
+        assert_eq!(proto::Action::from(Action::Remove), proto::Action::Remove);
+    }
+
+    // NextHopType tests
+    #[test]
+    fn test_next_hop_type_default() {
+        assert_eq!(NextHopType::default(), NextHopType::Standard);
+    }
+
+    #[test]
+    fn test_next_hop_type_display() {
+        assert_eq!(format!("{}", NextHopType::Standard), "STANDARD");
+        assert_eq!(format!("{}", NextHopType::Nat), "NAT");
+        assert_eq!(
+            format!("{}", NextHopType::LoadBalancerTarget),
+            "LOADBALANCER_TARGET"
+        );
+    }
+
+    #[test]
+    fn test_next_hop_type_from_proto() {
+        assert_eq!(
+            NextHopType::from(proto::NextHopType::Standard),
+            NextHopType::Standard
+        );
+        assert_eq!(NextHopType::from(proto::NextHopType::Nat), NextHopType::Nat);
+        assert_eq!(
+            NextHopType::from(proto::NextHopType::LoadbalancerTarget),
+            NextHopType::LoadBalancerTarget
+        );
+    }
+
+    #[test]
+    fn test_next_hop_type_to_proto() {
+        assert_eq!(
+            proto::NextHopType::from(NextHopType::Standard),
+            proto::NextHopType::Standard
+        );
+        assert_eq!(
+            proto::NextHopType::from(NextHopType::Nat),
+            proto::NextHopType::Nat
+        );
+        assert_eq!(
+            proto::NextHopType::from(NextHopType::LoadBalancerTarget),
+            proto::NextHopType::LoadbalancerTarget
+        );
+    }
+
+    // Destination tests
+    #[test]
+    fn test_destination_from_ipv4() {
+        let dest = Destination::from_ipv4(Ipv4Addr::new(10, 0, 1, 0), 24);
+        assert_eq!(dest.prefix.to_string(), "10.0.1.0/24");
+        assert_eq!(dest.ip_version(), IpVersion::V4);
+    }
+
+    #[test]
+    fn test_destination_from_ipv6() {
+        let dest = Destination::from_ipv6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0), 64);
+        assert_eq!(dest.prefix.to_string(), "2001:db8::/64");
+        assert_eq!(dest.ip_version(), IpVersion::V6);
+    }
+
+    #[test]
+    fn test_destination_display() {
+        let dest = Destination::from_ipv4(Ipv4Addr::new(192, 168, 1, 0), 24);
+        assert_eq!(format!("{}", dest), "192.168.1.0/24");
+    }
+
+    #[test]
+    fn test_destination_new() {
+        let prefix: ipnet::IpNet = "172.16.0.0/16".parse().unwrap();
+        let dest = Destination::new(prefix);
+        assert_eq!(dest.prefix.to_string(), "172.16.0.0/16");
+    }
+
+    #[test]
+    fn test_destination_hash() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(Destination::from_ipv4(Ipv4Addr::new(10, 0, 0, 0), 8));
+        set.insert(Destination::from_ipv4(Ipv4Addr::new(10, 0, 0, 0), 8));
+        set.insert(Destination::from_ipv4(Ipv4Addr::new(10, 0, 0, 0), 16));
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn test_destination_to_proto_ipv4() {
+        let dest = Destination::from_ipv4(Ipv4Addr::new(10, 0, 1, 0), 24);
+        let proto_dest = proto::Destination::from(&dest);
+        assert_eq!(proto_dest.ip_version, proto::IpVersion::IPv4 as i32);
+        assert_eq!(proto_dest.prefix, vec![10, 0, 1, 0]);
+        assert_eq!(proto_dest.prefix_length, 24);
+    }
+
+    #[test]
+    fn test_destination_to_proto_ipv6() {
+        let dest = Destination::from_ipv6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1), 128);
+        let proto_dest = proto::Destination::from(&dest);
+        assert_eq!(proto_dest.ip_version, proto::IpVersion::IPv6 as i32);
+        assert_eq!(proto_dest.prefix.len(), 16);
+        assert_eq!(proto_dest.prefix_length, 128);
+    }
+
+    #[test]
+    fn test_destination_from_proto_ipv4() {
+        let proto_dest = proto::Destination {
+            ip_version: proto::IpVersion::IPv4 as i32,
+            prefix: vec![192, 168, 0, 0],
+            prefix_length: 16,
+        };
+        let dest = Destination::try_from(proto_dest).unwrap();
+        assert_eq!(dest.prefix.to_string(), "192.168.0.0/16");
+    }
+
+    #[test]
+    fn test_destination_from_proto_ipv6() {
+        let proto_dest = proto::Destination {
+            ip_version: proto::IpVersion::IPv6 as i32,
+            prefix: vec![0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            prefix_length: 32,
+        };
+        let dest = Destination::try_from(proto_dest).unwrap();
+        assert_eq!(dest.prefix.to_string(), "2001:db8::/32");
+    }
+
+    #[test]
+    fn test_destination_from_proto_invalid_ipv4_length() {
+        let proto_dest = proto::Destination {
+            ip_version: proto::IpVersion::IPv4 as i32,
+            prefix: vec![10, 0, 1], // Only 3 bytes
+            prefix_length: 24,
+        };
+        assert!(Destination::try_from(proto_dest).is_err());
+    }
+
+    #[test]
+    fn test_destination_from_proto_invalid_ipv6_length() {
+        let proto_dest = proto::Destination {
+            ip_version: proto::IpVersion::IPv6 as i32,
+            prefix: vec![0x20, 0x01, 0x0d, 0xb8], // Only 4 bytes
+            prefix_length: 32,
+        };
+        assert!(Destination::try_from(proto_dest).is_err());
+    }
+
+    // NextHop tests
+    #[test]
+    fn test_next_hop_standard() {
+        let addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+        let hop = NextHop::standard(addr);
+        assert_eq!(hop.target_address, addr);
+        assert_eq!(hop.target_vni, None);
+        assert_eq!(hop.hop_type, NextHopType::Standard);
+        assert_eq!(hop.nat_port_range_from, 0);
+        assert_eq!(hop.nat_port_range_to, 0);
+    }
+
+    #[test]
+    fn test_next_hop_standard_with_vni() {
+        let addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2);
+        let hop = NextHop::standard_with_vni(addr, 200);
+        assert_eq!(hop.target_address, addr);
+        assert_eq!(hop.target_vni, Some(200));
+        assert_eq!(hop.hop_type, NextHopType::Standard);
+    }
+
+    #[test]
+    fn test_next_hop_nat() {
+        let addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 3);
+        let hop = NextHop::nat(addr, 30000, 40000);
+        assert_eq!(hop.target_address, addr);
+        assert_eq!(hop.hop_type, NextHopType::Nat);
+        assert_eq!(hop.nat_port_range_from, 30000);
+        assert_eq!(hop.nat_port_range_to, 40000);
+    }
+
+    #[test]
+    fn test_next_hop_load_balancer() {
+        let addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 4);
+        let hop = NextHop::load_balancer(addr);
+        assert_eq!(hop.target_address, addr);
+        assert_eq!(hop.hop_type, NextHopType::LoadBalancerTarget);
+    }
+
+    #[test]
+    fn test_next_hop_display_standard() {
+        let hop = NextHop::standard(Ipv6Addr::LOCALHOST);
+        assert_eq!(format!("{}", hop), "::1");
+    }
+
+    #[test]
+    fn test_next_hop_display_with_vni() {
+        let hop = NextHop::standard_with_vni(Ipv6Addr::LOCALHOST, 100);
+        assert_eq!(format!("{}", hop), "::1 (VNI: 100)");
+    }
+
+    #[test]
+    fn test_next_hop_display_nat() {
+        let hop = NextHop::nat(Ipv6Addr::LOCALHOST, 1000, 2000);
+        assert_eq!(format!("{}", hop), "::1 [NAT ports 1000-2000]");
+    }
+
+    #[test]
+    fn test_next_hop_display_lb() {
+        let hop = NextHop::load_balancer(Ipv6Addr::LOCALHOST);
+        assert_eq!(format!("{}", hop), "::1 [LB]");
+    }
+
+    #[test]
+    fn test_next_hop_to_proto() {
+        let hop = NextHop::nat(
+            Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 5),
+            10000,
+            20000,
+        );
+        let proto_hop = proto::NextHop::from(&hop);
+        assert_eq!(proto_hop.target_address.len(), 16);
+        assert_eq!(proto_hop.r#type, proto::NextHopType::Nat as i32);
+        assert_eq!(proto_hop.nat_port_range_from, 10000);
+        assert_eq!(proto_hop.nat_port_range_to, 20000);
+    }
+
+    #[test]
+    fn test_next_hop_from_proto() {
+        let proto_hop = proto::NextHop {
+            target_address: vec![0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6],
+            target_vni: 300,
+            r#type: proto::NextHopType::Standard as i32,
+            nat_port_range_from: 0,
+            nat_port_range_to: 0,
+        };
+        let hop = NextHop::try_from(proto_hop).unwrap();
+        assert_eq!(
+            hop.target_address,
+            Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 6)
+        );
+        assert_eq!(hop.target_vni, Some(300));
+        assert_eq!(hop.hop_type, NextHopType::Standard);
+    }
+
+    #[test]
+    fn test_next_hop_from_proto_no_vni() {
+        let proto_hop = proto::NextHop {
+            target_address: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            target_vni: 0,
+            r#type: proto::NextHopType::Standard as i32,
+            nat_port_range_from: 0,
+            nat_port_range_to: 0,
+        };
+        let hop = NextHop::try_from(proto_hop).unwrap();
+        assert_eq!(hop.target_vni, None);
+    }
+
+    #[test]
+    fn test_next_hop_from_proto_invalid_address() {
+        let proto_hop = proto::NextHop {
+            target_address: vec![1, 2, 3], // Invalid length
+            target_vni: 0,
+            r#type: proto::NextHopType::Standard as i32,
+            nat_port_range_from: 0,
+            nat_port_range_to: 0,
+        };
+        assert!(NextHop::try_from(proto_hop).is_err());
+    }
+
+    #[test]
+    fn test_next_hop_hash() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        let hop1 = NextHop::standard(Ipv6Addr::LOCALHOST);
+        let hop2 = NextHop::standard(Ipv6Addr::LOCALHOST);
+        let hop3 = NextHop::nat(Ipv6Addr::LOCALHOST, 1000, 2000);
+        set.insert(hop1);
+        set.insert(hop2);
+        set.insert(hop3);
+        assert_eq!(set.len(), 2);
+    }
+
+    // ConnectionState tests
+    #[test]
+    fn test_connection_state_display() {
+        assert_eq!(format!("{}", ConnectionState::Connecting), "CONNECTING");
+        assert_eq!(format!("{}", ConnectionState::HelloSent), "HELLO_SENT");
+        assert_eq!(
+            format!("{}", ConnectionState::HelloReceived),
+            "HELLO_RECEIVED"
+        );
+        assert_eq!(format!("{}", ConnectionState::Established), "ESTABLISHED");
+        assert_eq!(format!("{}", ConnectionState::Retry), "RETRY");
+        assert_eq!(format!("{}", ConnectionState::Closed), "CLOSED");
+    }
+
+    #[test]
+    fn test_connection_state_equality() {
+        assert_eq!(ConnectionState::Established, ConnectionState::Established);
+        assert_ne!(ConnectionState::Connecting, ConnectionState::Established);
+    }
+}

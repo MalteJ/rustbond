@@ -271,6 +271,28 @@ mod tests {
     }
 
     #[test]
+    fn test_hello_server() {
+        let msg = Message::Hello {
+            keepalive_interval: 10,
+            is_server: true,
+        };
+
+        let encoded = msg.encode().unwrap();
+        let (decoded, _) = Message::decode(&encoded).unwrap();
+
+        match decoded {
+            Message::Hello {
+                keepalive_interval,
+                is_server,
+            } => {
+                assert_eq!(keepalive_interval, 10);
+                assert!(is_server);
+            }
+            _ => panic!("wrong message type"),
+        }
+    }
+
+    #[test]
     fn test_keepalive_roundtrip() {
         let msg = Message::Keepalive;
 
@@ -279,6 +301,19 @@ mod tests {
 
         assert_eq!(len, encoded.len());
         assert!(matches!(decoded, Message::Keepalive));
+    }
+
+    #[test]
+    fn test_keepalive_header() {
+        let msg = Message::Keepalive;
+        let encoded = msg.encode().unwrap();
+
+        // Keepalive should have 4-byte header with 0 payload
+        assert_eq!(encoded.len(), 4);
+        assert_eq!(encoded[0], PROTOCOL_VERSION);
+        assert_eq!(encoded[1], 0); // Length high byte
+        assert_eq!(encoded[2], 0); // Length low byte
+        assert_eq!(encoded[3], MessageType::Keepalive as u8);
     }
 
     #[test]
@@ -291,6 +326,20 @@ mod tests {
         assert_eq!(len, encoded.len());
         match decoded {
             Message::Subscribe { vni } => assert_eq!(vni.0, 100),
+            _ => panic!("wrong message type"),
+        }
+    }
+
+    #[test]
+    fn test_unsubscribe_roundtrip() {
+        let msg = Message::Unsubscribe { vni: Vni(200) };
+
+        let encoded = msg.encode().unwrap();
+        let (decoded, len) = Message::decode(&encoded).unwrap();
+
+        assert_eq!(len, encoded.len());
+        match decoded {
+            Message::Unsubscribe { vni } => assert_eq!(vni.0, 200),
             _ => panic!("wrong message type"),
         }
     }
@@ -325,5 +374,264 @@ mod tests {
             }
             _ => panic!("wrong message type"),
         }
+    }
+
+    #[test]
+    fn test_update_remove_action() {
+        let msg = Message::Update {
+            action: Action::Remove,
+            vni: Vni(300),
+            destination: Destination::from_ipv4([192, 168, 0, 0].into(), 16),
+            next_hop: NextHop::standard(Ipv6Addr::LOCALHOST),
+        };
+
+        let encoded = msg.encode().unwrap();
+        let (decoded, _) = Message::decode(&encoded).unwrap();
+
+        match decoded {
+            Message::Update { action, vni, .. } => {
+                assert_eq!(action, Action::Remove);
+                assert_eq!(vni.0, 300);
+            }
+            _ => panic!("wrong message type"),
+        }
+    }
+
+    #[test]
+    fn test_update_with_nat_hop() {
+        let msg = Message::Update {
+            action: Action::Add,
+            vni: Vni(100),
+            destination: Destination::from_ipv4([10, 0, 0, 0].into(), 8),
+            next_hop: NextHop::nat(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1), 30000, 40000),
+        };
+
+        let encoded = msg.encode().unwrap();
+        let (decoded, _) = Message::decode(&encoded).unwrap();
+
+        match decoded {
+            Message::Update { next_hop, .. } => {
+                assert_eq!(next_hop.hop_type, crate::types::NextHopType::Nat);
+                assert_eq!(next_hop.nat_port_range_from, 30000);
+                assert_eq!(next_hop.nat_port_range_to, 40000);
+            }
+            _ => panic!("wrong message type"),
+        }
+    }
+
+    #[test]
+    fn test_update_with_lb_hop() {
+        let msg = Message::Update {
+            action: Action::Add,
+            vni: Vni(100),
+            destination: Destination::from_ipv4([172, 16, 0, 0].into(), 12),
+            next_hop: NextHop::load_balancer(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2)),
+        };
+
+        let encoded = msg.encode().unwrap();
+        let (decoded, _) = Message::decode(&encoded).unwrap();
+
+        match decoded {
+            Message::Update { next_hop, .. } => {
+                assert_eq!(
+                    next_hop.hop_type,
+                    crate::types::NextHopType::LoadBalancerTarget
+                );
+            }
+            _ => panic!("wrong message type"),
+        }
+    }
+
+    #[test]
+    fn test_update_ipv6_destination() {
+        let msg = Message::Update {
+            action: Action::Add,
+            vni: Vni(100),
+            destination: Destination::from_ipv6(
+                Ipv6Addr::new(0x2001, 0xdb8, 0x1234, 0, 0, 0, 0, 0),
+                48,
+            ),
+            next_hop: NextHop::standard(Ipv6Addr::LOCALHOST),
+        };
+
+        let encoded = msg.encode().unwrap();
+        let (decoded, _) = Message::decode(&encoded).unwrap();
+
+        match decoded {
+            Message::Update { destination, .. } => {
+                assert_eq!(destination.prefix.to_string(), "2001:db8:1234::/48");
+            }
+            _ => panic!("wrong message type"),
+        }
+    }
+
+    #[test]
+    fn test_update_with_target_vni() {
+        let msg = Message::Update {
+            action: Action::Add,
+            vni: Vni(100),
+            destination: Destination::from_ipv4([10, 0, 0, 0].into(), 8),
+            next_hop: NextHop::standard_with_vni(
+                Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 3),
+                500,
+            ),
+        };
+
+        let encoded = msg.encode().unwrap();
+        let (decoded, _) = Message::decode(&encoded).unwrap();
+
+        match decoded {
+            Message::Update { next_hop, .. } => {
+                assert_eq!(next_hop.target_vni, Some(500));
+            }
+            _ => panic!("wrong message type"),
+        }
+    }
+
+    // Error cases
+    #[test]
+    fn test_decode_too_short() {
+        let buf = vec![1, 0]; // Only 2 bytes
+        let result = Message::decode(&buf);
+        assert!(result.is_err());
+        match result {
+            Err(Error::Protocol(msg)) => assert!(msg.contains("too short")),
+            _ => panic!("expected Protocol error"),
+        }
+    }
+
+    #[test]
+    fn test_decode_invalid_version() {
+        let buf = vec![2, 0, 0, 1]; // Version 2 (invalid)
+        let result = Message::decode(&buf);
+        assert!(result.is_err());
+        match result {
+            Err(Error::Protocol(msg)) => assert!(msg.contains("version")),
+            _ => panic!("expected Protocol error"),
+        }
+    }
+
+    #[test]
+    fn test_decode_unknown_message_type() {
+        let buf = vec![1, 0, 0, 99]; // Message type 99 (invalid)
+        let result = Message::decode(&buf);
+        assert!(result.is_err());
+        match result {
+            Err(Error::Protocol(msg)) => assert!(msg.contains("message type")),
+            _ => panic!("expected Protocol error"),
+        }
+    }
+
+    #[test]
+    fn test_decode_truncated_payload() {
+        // Header says 10 bytes payload, but only 2 bytes provided
+        let buf = vec![1, 0, 10, 1, 0, 0];
+        let result = Message::decode(&buf);
+        assert!(result.is_err());
+        match result {
+            Err(Error::Protocol(msg)) => assert!(msg.contains("truncated")),
+            _ => panic!("expected Protocol error"),
+        }
+    }
+
+    #[test]
+    fn test_message_type_try_from() {
+        assert_eq!(MessageType::try_from(1).unwrap(), MessageType::Hello);
+        assert_eq!(MessageType::try_from(2).unwrap(), MessageType::Keepalive);
+        assert_eq!(MessageType::try_from(3).unwrap(), MessageType::Subscribe);
+        assert_eq!(MessageType::try_from(4).unwrap(), MessageType::Unsubscribe);
+        assert_eq!(MessageType::try_from(5).unwrap(), MessageType::Update);
+        assert!(MessageType::try_from(0).is_err());
+        assert!(MessageType::try_from(6).is_err());
+        assert!(MessageType::try_from(255).is_err());
+    }
+
+    #[test]
+    fn test_message_type_method() {
+        assert_eq!(
+            Message::Hello {
+                keepalive_interval: 5,
+                is_server: false
+            }
+            .message_type(),
+            MessageType::Hello
+        );
+        assert_eq!(Message::Keepalive.message_type(), MessageType::Keepalive);
+        assert_eq!(
+            Message::Subscribe { vni: Vni(1) }.message_type(),
+            MessageType::Subscribe
+        );
+        assert_eq!(
+            Message::Unsubscribe { vni: Vni(1) }.message_type(),
+            MessageType::Unsubscribe
+        );
+
+        let update = Message::Update {
+            action: Action::Add,
+            vni: Vni(1),
+            destination: Destination::from_ipv4([10, 0, 0, 0].into(), 8),
+            next_hop: NextHop::standard(Ipv6Addr::LOCALHOST),
+        };
+        assert_eq!(update.message_type(), MessageType::Update);
+    }
+
+    #[test]
+    fn test_header_encoding() {
+        let msg = Message::Subscribe { vni: Vni(100) };
+        let encoded = msg.encode().unwrap();
+
+        // Check header
+        assert_eq!(encoded[0], PROTOCOL_VERSION);
+        assert_eq!(encoded[3], MessageType::Subscribe as u8);
+
+        // Payload length should be in bytes 1-2 (big endian)
+        let payload_len = ((encoded[1] as usize) << 8) | (encoded[2] as usize);
+        assert_eq!(payload_len, encoded.len() - HEADER_SIZE);
+    }
+
+    #[test]
+    fn test_decode_multiple_messages_in_buffer() {
+        // Encode two messages
+        let msg1 = Message::Keepalive;
+        let msg2 = Message::Subscribe { vni: Vni(100) };
+
+        let mut buf = msg1.encode().unwrap();
+        buf.extend(msg2.encode().unwrap());
+
+        // Decode first message
+        let (decoded1, consumed1) = Message::decode(&buf).unwrap();
+        assert!(matches!(decoded1, Message::Keepalive));
+
+        // Decode second message from remaining buffer
+        let (decoded2, consumed2) = Message::decode(&buf[consumed1..]).unwrap();
+        match decoded2 {
+            Message::Subscribe { vni } => assert_eq!(vni.0, 100),
+            _ => panic!("wrong message type"),
+        }
+
+        assert_eq!(consumed1 + consumed2, buf.len());
+    }
+
+    #[test]
+    fn test_large_vni_values() {
+        // Test with max VNI value
+        let msg = Message::Subscribe {
+            vni: Vni(u32::MAX),
+        };
+        let encoded = msg.encode().unwrap();
+        let (decoded, _) = Message::decode(&encoded).unwrap();
+
+        match decoded {
+            Message::Subscribe { vni } => assert_eq!(vni.0, u32::MAX),
+            _ => panic!("wrong message type"),
+        }
+    }
+
+    #[test]
+    fn test_constants() {
+        assert_eq!(PROTOCOL_VERSION, 1);
+        assert_eq!(HEADER_SIZE, 4);
+        assert_eq!(MAX_PAYLOAD_SIZE, 1188);
+        assert_eq!(MAX_MESSAGE_SIZE, HEADER_SIZE + MAX_PAYLOAD_SIZE);
     }
 }
