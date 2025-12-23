@@ -77,6 +77,10 @@ struct Args {
 }
 
 /// A route handler that logs all route changes.
+///
+/// The RouteHandler trait is how you receive route updates from the server.
+/// In multi-server mode, routes are deduplicated - you only get one add_route
+/// call even if multiple servers announce the same route.
 struct PrintHandler;
 
 impl RouteHandler for PrintHandler {
@@ -96,6 +100,9 @@ impl RouteHandler for PrintHandler {
 }
 
 /// A route handler that installs routes to the kernel via netlink.
+///
+/// This demonstrates integrating MetalBond with the Linux routing stack.
+/// Routes are installed as they arrive and removed when withdrawn.
 #[cfg(feature = "netlink")]
 struct NetlinkHandler {
     netlink: Arc<NetlinkClient>,
@@ -254,6 +261,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_client(args, PrintHandler).await
 }
 
+/// Main client loop - connects to servers, subscribes, and listens for routes.
+///
+/// When multiple servers are provided, the client connects to all of them
+/// simultaneously for high availability. Routes from all servers are combined,
+/// with automatic deduplication.
 async fn run_client<H: RouteHandler>(args: Args, handler: H) -> Result<(), Box<dyn std::error::Error>> {
     let server_refs: Vec<&str> = args.servers.iter().map(|s| s.as_str()).collect();
 

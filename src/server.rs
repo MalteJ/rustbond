@@ -2,6 +2,37 @@
 //!
 //! The server accepts connections from clients, manages subscriptions,
 //! and distributes routes between subscribers.
+//!
+//! ## Features
+//!
+//! - **VNI-based routing**: Routes are organized by Virtual Network Identifier
+//! - **Automatic cleanup**: When a client disconnects, all its routes are withdrawn
+//! - **Route distribution**: Updates are forwarded to all subscribers of a VNI
+//! - **Keepalive negotiation**: Server and client agree on the minimum keepalive interval
+//!
+//! ## Protocol Flow
+//!
+//! 1. Client connects and sends `HELLO` with its keepalive interval
+//! 2. Server responds with `HELLO` containing its interval
+//! 3. Client sends `KEEPALIVE`, server responds with `KEEPALIVE`
+//! 4. Connection is established; client can now subscribe and announce routes
+//!
+//! ## Example
+//!
+//! ```no_run
+//! # use rustbond::{MetalBondServer, ServerConfig};
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! // Start server with default configuration
+//! let server = MetalBondServer::start("[::]:4711", ServerConfig::default()).await?;
+//!
+//! // Check connected peers
+//! println!("Connected peers: {}", server.peer_count().await);
+//!
+//! // Shutdown when done
+//! server.shutdown().await?;
+//! # Ok(())
+//! # }
+//! ```
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;

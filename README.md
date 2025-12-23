@@ -1,8 +1,12 @@
 # RustBond
 
+[![Crates.io](https://img.shields.io/crates/v/rustbond.svg)](https://crates.io/crates/rustbond)
+[![Documentation](https://docs.rs/rustbond/badge.svg)](https://docs.rs/rustbond)
+[![License](https://img.shields.io/crates/l/rustbond.svg)](LICENSE)
+
 A Rust implementation of the [MetalBond](https://github.com/ironcore-dev/metalbond) route distribution protocol.
 
-MetalBond distributes virtual network routes across hypervisors over TCP/IPv6.
+MetalBond distributes virtual network routes across hypervisors. Connections between clients and servers use TCP (typically over IPv6 for an IPv6-only fabric), while the overlay supports both IPv4 and IPv6 routes (IPv4/6-in-IPv6 tunneling).
 
 ## Features
 
@@ -13,6 +17,17 @@ MetalBond distributes virtual network routes across hypervisors over TCP/IPv6.
 - Standard, NAT, and LoadBalancer route types
 - Interoperable with Go MetalBond
 - Optional netlink integration for kernel route installation
+
+## Protocol Overview
+
+MetalBond uses a simple message-based protocol over TCP:
+
+1. **Handshake**: Client and server exchange `HELLO` messages to negotiate keepalive intervals
+2. **Keepalive**: Both sides send periodic `KEEPALIVE` messages to detect connection loss
+3. **Subscribe**: Clients subscribe to VNIs to receive routes for specific virtual networks
+4. **Update**: Route announcements and withdrawals are distributed via `UPDATE` messages
+
+When a client disconnects, the server automatically withdraws all routes announced by that client.
 
 ## Quick Start
 
@@ -99,11 +114,30 @@ cargo run --example client --features netlink -- \
 
 Options:
 - `--install-routes VNI#TABLE` - Map VNI to kernel routing table (can be repeated)
-- `--tun DEVICE` - Tunnel device name (default: ip6tnl0)
+- `--tun DEVICE` - Tunnel device name for encapsulated traffic (default: ip6tnl0)
 
-Routes are marked with protocol 254 for identification. Stale routes from previous runs are automatically cleaned up on startup.
+How it works:
+- Routes received for a VNI are installed into the corresponding kernel routing table
+- Each route points to the tunnel device with the next-hop as the gateway
+- Routes are marked with protocol 254 (`RTPROT_METALBOND`) for identification
+- On startup, stale routes from previous runs (same protocol marker) are automatically cleaned up
+- When a route is withdrawn by the server, it's removed from the kernel table
 
-**Note:** Requires root privileges to modify kernel routing tables.
+**Note:** Requires root/`CAP_NET_ADMIN` to modify kernel routing tables.
+
+## Error Handling
+
+The library uses a single `Error` type for all operations. Common errors include:
+
+- `Error::NotEstablished` - Operation attempted before connection is ready
+- `Error::Timeout` / `Error::ConnectionTimeout` - Connection or operation timed out
+- `Error::Closed` - Connection was closed
+- `Error::RouteAlreadyAnnounced` - Attempted to announce a duplicate route
+- `Error::RouteNotFound` - Attempted to withdraw a non-existent route
+- `Error::Io(...)` - Underlying I/O error
+- `Error::Protocol(...)` - Protocol violation or malformed message
+
+For multi-server setups, operations like `subscribe()` and `announce()` succeed if at least one server accepts them, logging warnings for servers that fail.
 
 ## Testing
 

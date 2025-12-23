@@ -53,7 +53,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Server running!");
     println!();
 
-    // Print status periodically
+    // Print status periodically.
+    // The server state is shared via Arc, so we can access it from a background task.
     let state = server.state().clone();
     let status_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(10));
