@@ -124,16 +124,26 @@ impl Destination {
     }
 
     /// Creates a destination from an IPv4 address and prefix length.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `prefix_len` is greater than 32.
     pub fn from_ipv4(addr: Ipv4Addr, prefix_len: u8) -> Self {
         Self {
-            prefix: IpNet::new(IpAddr::V4(addr), prefix_len).expect("valid prefix"),
+            prefix: IpNet::new(IpAddr::V4(addr), prefix_len)
+                .expect("prefix_len must be <= 32 for IPv4"),
         }
     }
 
     /// Creates a destination from an IPv6 address and prefix length.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `prefix_len` is greater than 128.
     pub fn from_ipv6(addr: Ipv6Addr, prefix_len: u8) -> Self {
         Self {
-            prefix: IpNet::new(IpAddr::V6(addr), prefix_len).expect("valid prefix"),
+            prefix: IpNet::new(IpAddr::V6(addr), prefix_len)
+                .expect("prefix_len must be <= 128 for IPv6"),
         }
     }
 
@@ -158,17 +168,17 @@ impl TryFrom<proto::Destination> for Destination {
     fn try_from(d: proto::Destination) -> Result<Self, Self::Error> {
         let addr = match proto::IpVersion::try_from(d.ip_version) {
             Ok(proto::IpVersion::IPv4) => {
-                if d.prefix.len() != 4 {
-                    return Err(crate::Error::Protocol("invalid IPv4 address length".into()));
-                }
-                let bytes: [u8; 4] = d.prefix.try_into().unwrap();
+                let bytes: [u8; 4] = d
+                    .prefix
+                    .try_into()
+                    .map_err(|_| crate::Error::Protocol("invalid IPv4 address length".into()))?;
                 IpAddr::V4(Ipv4Addr::from(bytes))
             }
             Ok(proto::IpVersion::IPv6) => {
-                if d.prefix.len() != 16 {
-                    return Err(crate::Error::Protocol("invalid IPv6 address length".into()));
-                }
-                let bytes: [u8; 16] = d.prefix.try_into().unwrap();
+                let bytes: [u8; 16] = d
+                    .prefix
+                    .try_into()
+                    .map_err(|_| crate::Error::Protocol("invalid IPv6 address length".into()))?;
                 IpAddr::V6(Ipv6Addr::from(bytes))
             }
             Err(_) => return Err(crate::Error::Protocol("invalid IP version".into())),
@@ -298,10 +308,10 @@ impl TryFrom<proto::NextHop> for NextHop {
     type Error = crate::Error;
 
     fn try_from(nh: proto::NextHop) -> Result<Self, Self::Error> {
-        if nh.target_address.len() != 16 {
-            return Err(crate::Error::Protocol("invalid target address length".into()));
-        }
-        let bytes: [u8; 16] = nh.target_address.try_into().unwrap();
+        let bytes: [u8; 16] = nh
+            .target_address
+            .try_into()
+            .map_err(|_| crate::Error::Protocol("invalid target address length".into()))?;
         let target_address = Ipv6Addr::from(bytes);
 
         let hop_type = proto::NextHopType::try_from(nh.r#type)

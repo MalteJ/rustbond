@@ -29,6 +29,9 @@ ipnet = "2"
 # Random for retry intervals
 rand = "0.8"
 
+# Fast, non-poisoning locks
+parking_lot = "0.12"
+
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["full", "test-util"] }

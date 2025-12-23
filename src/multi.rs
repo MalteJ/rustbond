@@ -69,7 +69,7 @@ pub enum MultiServerState {
 /// servers that have announced it.
 #[derive(Debug, Default)]
 pub struct RouteOriginTracker {
-    inner: std::sync::RwLock<HashMap<(Vni, Destination, NextHop), HashSet<ServerId>>>,
+    inner: parking_lot::RwLock<HashMap<(Vni, Destination, NextHop), HashSet<ServerId>>>,
 }
 
 impl RouteOriginTracker {
@@ -89,7 +89,7 @@ impl RouteOriginTracker {
         hop: NextHop,
         server: ServerId,
     ) -> bool {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write();
         let key = (vni, dest, hop);
         let servers = inner.entry(key).or_default();
         let was_empty = servers.is_empty();
@@ -108,7 +108,7 @@ impl RouteOriginTracker {
         hop: &NextHop,
         server: ServerId,
     ) -> bool {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write();
         let key = (vni, dest.clone(), hop.clone());
 
         if let Some(servers) = inner.get_mut(&key) {
@@ -129,7 +129,7 @@ impl RouteOriginTracker {
     /// This should be called when a server disconnects to clean up
     /// routes that were only announced by that server.
     pub fn remove_server(&self, server: ServerId) -> Vec<(Vni, Destination, NextHop)> {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write();
         let mut to_notify = Vec::new();
 
         inner.retain(|(vni, dest, hop), servers| {
@@ -147,7 +147,7 @@ impl RouteOriginTracker {
 
     /// Returns the number of unique routes being tracked.
     pub fn len(&self) -> usize {
-        self.inner.read().unwrap().len()
+        self.inner.read().len()
     }
 
     /// Returns true if no routes are being tracked.
@@ -157,7 +157,7 @@ impl RouteOriginTracker {
 
     /// Returns all routes with their announcing servers.
     pub fn get_all(&self) -> Vec<((Vni, Destination, NextHop), HashSet<ServerId>)> {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         inner
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
@@ -171,7 +171,7 @@ impl RouteOriginTracker {
         dest: &Destination,
         hop: &NextHop,
     ) -> Option<HashSet<ServerId>> {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         let key = (vni, dest.clone(), hop.clone());
         inner.get(&key).cloned()
     }

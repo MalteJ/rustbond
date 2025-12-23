@@ -1,7 +1,8 @@
 //! Route and route table types.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::RwLock;
+
+use parking_lot::RwLock;
 
 use crate::types::{Destination, NextHop, Vni};
 
@@ -54,7 +55,7 @@ impl RouteTable {
     ///
     /// Returns true if the next hop was newly added, false if it already existed.
     pub fn add_next_hop(&self, vni: Vni, destination: Destination, next_hop: NextHop) -> bool {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write();
         let vni_routes = inner.routes.entry(vni).or_default();
         let next_hops = vni_routes.entry(destination).or_default();
         next_hops.insert(next_hop)
@@ -70,7 +71,7 @@ impl RouteTable {
         destination: &Destination,
         next_hop: &NextHop,
     ) -> (bool, usize) {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write();
 
         if let Some(vni_routes) = inner.routes.get_mut(&vni) {
             if let Some(next_hops) = vni_routes.get_mut(destination) {
@@ -94,7 +95,7 @@ impl RouteTable {
 
     /// Checks if a next hop exists for a destination in a VNI.
     pub fn next_hop_exists(&self, vni: Vni, destination: &Destination, next_hop: &NextHop) -> bool {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         inner
             .routes
             .get(&vni)
@@ -105,13 +106,13 @@ impl RouteTable {
 
     /// Returns all VNIs in the route table.
     pub fn get_vnis(&self) -> Vec<Vni> {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         inner.routes.keys().copied().collect()
     }
 
     /// Returns all destinations and their next hops for a VNI.
     pub fn get_destinations_by_vni(&self, vni: Vni) -> HashMap<Destination, Vec<NextHop>> {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         inner
             .routes
             .get(&vni)
@@ -126,7 +127,7 @@ impl RouteTable {
 
     /// Returns all routes for a VNI.
     pub fn get_routes_by_vni(&self, vni: Vni) -> Vec<Route> {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         let mut routes = Vec::new();
 
         if let Some(vni_routes) = inner.routes.get(&vni) {
@@ -142,7 +143,7 @@ impl RouteTable {
 
     /// Returns all routes in the table.
     pub fn get_all_routes(&self) -> Vec<(Vni, Route)> {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         let mut routes = Vec::new();
 
         for (&vni, vni_routes) in &inner.routes {
@@ -158,7 +159,7 @@ impl RouteTable {
 
     /// Removes all routes for a VNI.
     pub fn remove_vni(&self, vni: Vni) -> Vec<Route> {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write();
         let mut removed = Vec::new();
 
         if let Some(vni_routes) = inner.routes.remove(&vni) {
@@ -174,13 +175,13 @@ impl RouteTable {
 
     /// Clears all routes from the table.
     pub fn clear(&self) {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write();
         inner.routes.clear();
     }
 
     /// Returns the total number of routes in the table.
     pub fn len(&self) -> usize {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         inner
             .routes
             .values()
