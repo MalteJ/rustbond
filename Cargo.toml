@@ -1,0 +1,45 @@
+[workspace]
+
+[package]
+name = "rustbond"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "A Rust implementation of the MetalBond route distribution protocol"
+repository = "https://github.com/kernflow/rustbond"
+keywords = ["networking", "routing", "overlay", "metalbond"]
+categories = ["network-programming"]
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Protobuf
+prost = "0.13"
+
+# Error handling
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+
+# Network address types
+ipnet = "2"
+
+# Random for retry intervals
+rand = "0.8"
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["full", "test-util"] }
+
+[build-dependencies]
+prost-build = "0.13"
+
+[[example]]
+name = "client"
+path = "examples/client.rs"
+
+[[example]]
+name = "server"
+path = "examples/server.rs"

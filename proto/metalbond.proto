@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package metalbond;
+
+enum IPVersion {
+    IPv4 = 0;
+    IPv6 = 1;
+}
+
+enum Action {
+    ADD = 0;
+    REMOVE = 1;
+}
+
+enum NextHopType {
+    STANDARD = 0;
+    NAT = 1;
+    LOADBALANCER_TARGET = 2;
+}
+
+message Hello {
+    uint32 keepaliveInterval = 1;
+    bool isServer = 2;
+}
+
+message Subscription {
+    uint32 vni = 1;
+}
+
+message Update {
+    Action action = 1;
+    uint32 vni = 2;
+    Destination destination = 3;
+    NextHop nextHop = 4;
+}
+
+message Destination {
+    IPVersion ipVersion = 1;
+    bytes prefix = 2;
+    uint32 prefixLength = 3;
+}
+
+message NextHop {
+    bytes targetAddress = 1;
+    uint32 targetVNI = 2;
+
+    NextHopType type = 3;
+
+    uint32 natPortRangeFrom = 4;
+    uint32 natPortRangeTo = 5;
+}
