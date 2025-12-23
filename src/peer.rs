@@ -67,8 +67,6 @@ impl PeerState {
 pub struct Peer {
     /// Remote server address.
     remote_addr: String,
-    /// Keepalive interval in seconds.
-    keepalive_interval: u32,
     /// Shared state.
     state: Arc<PeerState>,
     /// Command sender to the peer task.
@@ -92,7 +90,6 @@ impl Peer {
 
         let peer = Self {
             remote_addr,
-            keepalive_interval: DEFAULT_KEEPALIVE_INTERVAL,
             state,
             cmd_tx,
         };
@@ -324,7 +321,7 @@ async fn run_connection<H: RouteHandler>(
                     match Message::decode(&msg_buf) {
                         Ok((msg, consumed)) => {
                             msg_buf.drain(..consumed);
-                            handle_message(msg, state, handler, &mut stream).await?;
+                            handle_message(msg, state, handler).await?;
                         }
                         Err(Error::Protocol(ref e)) if e.contains("too short") || e.contains("truncated") => {
                             // Need more data
@@ -416,7 +413,6 @@ async fn handle_message<H: RouteHandler>(
     msg: Message,
     state: &Arc<PeerState>,
     handler: &Arc<H>,
-    stream: &mut TcpStream,
 ) -> Result<()> {
     match msg {
         Message::Hello { .. } => {

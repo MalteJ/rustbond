@@ -63,11 +63,13 @@ mod types;
 mod wire;
 
 mod client;
+mod multi;
 mod peer;
 mod server;
 
 pub use client::{LoggingHandler, MetalBondClient, NoOpHandler};
 pub use error::Error;
+pub use multi::{MultiServerClient, MultiServerState, ServerId};
 pub use route::{Route, RouteTable};
 pub use server::{MetalBondServer, ServerConfig, ServerState};
 pub use types::{

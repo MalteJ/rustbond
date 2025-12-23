@@ -14,7 +14,7 @@ use crate::{Error, Result, RouteHandler};
 /// and provides methods for subscribing to VNIs and announcing routes.
 pub struct MetalBondClient<H: RouteHandler> {
     peer: Peer,
-    handler: Arc<H>,
+    _handler: std::marker::PhantomData<H>,
     _task: tokio::task::JoinHandle<()>,
 }
 
@@ -37,11 +37,11 @@ impl<H: RouteHandler> MetalBondClient<H> {
     /// ```
     pub fn connect(addr: impl Into<String>, handler: H) -> Self {
         let handler = Arc::new(handler);
-        let (peer, task) = Peer::new(addr.into(), handler.clone());
+        let (peer, task) = Peer::new(addr.into(), handler);
 
         Self {
             peer,
-            handler,
+            _handler: std::marker::PhantomData,
             _task: task,
         }
     }
@@ -74,6 +74,11 @@ impl<H: RouteHandler> MetalBondClient<H> {
     /// Returns the current connection state.
     pub async fn state(&self) -> ConnectionState {
         self.peer.get_state().await
+    }
+
+    /// Returns the remote server address.
+    pub fn remote_addr(&self) -> &str {
+        self.peer.remote_addr()
     }
 
     /// Returns true if the connection is established.

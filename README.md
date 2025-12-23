@@ -13,6 +13,7 @@ MetalBond is a route distribution protocol for managing virtual network routes a
 - Keepalive handling with configurable intervals
 - Support for STANDARD, NAT, and LOADBALANCER_TARGET route types
 - Full interoperability with Go MetalBond implementation
+- **Multi-server HA support**: Connect to multiple servers for high availability and ECMP
 
 ## Quick Start
 
@@ -111,6 +112,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+```
+
+### Multi-Server Client (High Availability)
+
+For high availability deployments, use `MultiServerClient` to connect to multiple servers simultaneously:
+
+```rust
+use rustbond::{MultiServerClient, RouteHandler, Route, Vni, Destination, NextHop};
+
+struct MyHandler;
+
+impl RouteHandler for MyHandler {
+    fn add_route(&self, vni: Vni, route: Route) {
+        println!("Add route: {} in VNI {}", route, vni);
+    }
+
+    fn remove_route(&self, vni: Vni, route: Route) {
+        println!("Remove route: {} in VNI {}", route, vni);
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let handler = MyHandler;
+
+    // Connect to multiple servers simultaneously
+    let client = MultiServerClient::connect(
+        &["[::1]:4711", "[::1]:4712", "[::1]:4713"],
+        handler,
+    );
+
+    // Wait for at least one server to connect
+    client.wait_any_established().await?;
+
+    // Subscribe to VNI 100 (sent to all connected servers)
+    client.subscribe(Vni(100)).await?;
+
+    // Routes from ALL servers are combined and deduplicated:
+    // - Same route from multiple servers: reported once
+    // - Different next-hops for same destination: all reported (ECMP)
+    // - Route removed only when ALL servers withdraw it
+
+    Ok(())
+}
+```
+
+**Key features:**
+
+- **Active-Active**: Connects to all configured servers simultaneously
+- **ECMP Support**: Different next-hops from different servers are combined
+- **Route Deduplication**: Same route from multiple servers triggers only one `add_route` call
+- **Resilient Withdrawal**: Routes are only removed when ALL servers withdraw them
+
+```bash
+# Run the multi-server example
+cargo run --example multi_client -- [::1]:4711 [::1]:4712 100
 ```
 
 ## Protocol Overview

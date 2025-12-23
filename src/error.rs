@@ -29,6 +29,10 @@ pub enum Error {
     #[error("timeout")]
     Timeout,
 
+    /// Connection timeout.
+    #[error("connection timeout")]
+    ConnectionTimeout,
+
     /// Already subscribed to this VNI.
     #[error("already subscribed to VNI {0}")]
     AlreadySubscribed(u32),

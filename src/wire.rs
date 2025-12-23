@@ -30,9 +30,6 @@ pub const HEADER_SIZE: usize = 4;
 /// Maximum payload size (to avoid IPv6 fragmentation).
 pub const MAX_PAYLOAD_SIZE: usize = 1188;
 
-/// Maximum total message size (header + payload).
-pub const MAX_MESSAGE_SIZE: usize = HEADER_SIZE + MAX_PAYLOAD_SIZE;
-
 /// Message type identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -632,6 +629,5 @@ mod tests {
         assert_eq!(PROTOCOL_VERSION, 1);
         assert_eq!(HEADER_SIZE, 4);
         assert_eq!(MAX_PAYLOAD_SIZE, 1188);
-        assert_eq!(MAX_MESSAGE_SIZE, HEADER_SIZE + MAX_PAYLOAD_SIZE);
     }
 }
