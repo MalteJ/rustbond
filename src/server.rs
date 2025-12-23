@@ -75,7 +75,7 @@ impl MetalBondServer {
     ///
     /// # Arguments
     ///
-    /// * `listen_addr` - Address to listen on (e.g., "[::]:4711")
+    /// * `listen_addr` - Address to listen on (e.g., `"[::]:4711"`)
     /// * `config` - Server configuration
     ///
     /// # Example

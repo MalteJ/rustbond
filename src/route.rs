@@ -33,7 +33,7 @@ impl std::fmt::Display for Route {
 
 /// A thread-safe route table.
 ///
-/// Structure: VNI -> Destination -> Set<NextHop>
+/// Structure: `VNI -> Destination -> Set<NextHop>`
 #[derive(Debug, Default)]
 pub struct RouteTable {
     inner: RwLock<RouteTableInner>,

@@ -21,18 +21,18 @@ pub struct MetalBondClient<H: RouteHandler> {
 impl<H: RouteHandler> MetalBondClient<H> {
     /// Connects to a MetalBond server.
     ///
-    /// The connection is established asynchronously. Use [`wait_established`] to wait
+    /// The connection is established asynchronously. Use [`Self::wait_established`] to wait
     /// for the connection to be fully established.
     ///
     /// # Arguments
     ///
-    /// * `addr` - The server address (e.g., "[::1]:4711" or "server.example.com:4711")
+    /// * `addr` - The server address (e.g., `"[::1]:4711"` or `"server.example.com:4711"`)
     /// * `handler` - A handler that will be called when routes are added or removed
     ///
     /// # Example
     ///
     /// ```ignore
-    /// let client = MetalBondClient::connect("[::1]:4711", handler).await?;
+    /// let client = MetalBondClient::connect("[::1]:4711", handler);
     /// client.wait_established().await?;
     /// ```
     pub fn connect(addr: impl Into<String>, handler: H) -> Self {

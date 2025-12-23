@@ -6,7 +6,19 @@ use ipnet::IpNet;
 
 use crate::proto;
 
-/// Virtual Network Identifier.
+/// Virtual Network Identifier (VNI).
+///
+/// VNIs are used to isolate network traffic in overlay networks.
+/// Each VNI represents a separate virtual network domain.
+///
+/// # Example
+///
+/// ```ignore
+/// use rustbond::Vni;
+///
+/// let vni = Vni(100);
+/// assert_eq!(u32::from(vni), 100);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Vni(pub u32);
 
@@ -28,10 +40,12 @@ impl std::fmt::Display for Vni {
     }
 }
 
-/// IP version.
+/// IP version for route destinations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpVersion {
+    /// IPv4 address family.
     V4,
+    /// IPv6 address family.
     V6,
 }
 
@@ -53,10 +67,12 @@ impl From<IpVersion> for proto::IpVersion {
     }
 }
 
-/// Update action.
+/// Route update action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
+    /// Add or announce a route.
     Add,
+    /// Remove or withdraw a route.
     Remove,
 }
 
