@@ -48,4 +48,14 @@ pub enum Error {
     /// Route not found.
     #[error("route not found")]
     RouteNotFound,
+
+    /// Netlink error.
+    #[cfg(feature = "netlink")]
+    #[error("netlink error: {0}")]
+    Netlink(String),
+
+    /// Netlink connection error.
+    #[cfg(feature = "netlink")]
+    #[error("netlink connection error: {0}")]
+    NetlinkConnection(#[from] rtnetlink::Error),
 }

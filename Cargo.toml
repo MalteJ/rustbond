@@ -2,7 +2,7 @@
 
 [package]
 name = "rustbond"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "Apache-2.0"
 description = "A Rust implementation of the MetalBond route distribution protocol"
@@ -33,6 +33,15 @@ rand = "0.8"
 
 # Fast, non-poisoning locks
 parking_lot = "0.12"
+
+# Netlink for kernel route installation (optional)
+rtnetlink = { version = "0.14", optional = true }
+netlink-packet-route = { version = "0.19", optional = true }
+futures = { version = "0.3", optional = true }
+
+[features]
+default = []
+netlink = ["rtnetlink", "netlink-packet-route", "futures"]
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

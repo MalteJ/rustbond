@@ -27,7 +27,7 @@
 //! }
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let client = MetalBondClient::connect("[::1]:4711", MyHandler);
+//! let client = MetalBondClient::connect(&["[::1]:4711"], MyHandler);
 //! client.wait_established().await?;
 //! client.subscribe(Vni(100)).await?;
 //! # Ok(())
@@ -39,14 +39,14 @@
 //! For high availability, connect to multiple servers simultaneously:
 //!
 //! ```no_run
-//! # use rustbond::{MultiServerClient, RouteHandler, Route, Vni};
+//! # use rustbond::{MetalBondClient, RouteHandler, Route, Vni};
 //! # struct MyHandler;
 //! # impl RouteHandler for MyHandler {
 //! #     fn add_route(&self, _: Vni, _: Route) {}
 //! #     fn remove_route(&self, _: Vni, _: Route) {}
 //! # }
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let client = MultiServerClient::connect(&["[::1]:4711", "[::1]:4712"], MyHandler);
+//! let client = MetalBondClient::connect(&["[::1]:4711", "[::1]:4712"], MyHandler);
 //! client.wait_any_established().await?;
 //! // Routes are deduplicated across servers; ECMP supported
 //! # Ok(())
@@ -60,6 +60,15 @@
 //! - VNI-based subscriptions
 //! - Multi-server HA with ECMP support
 //! - Standard, NAT, and LoadBalancer route types
+//!
+//! ## Netlink Feature
+//!
+//! Enable the `netlink` feature to install routes directly into the Linux kernel:
+//!
+//! ```toml
+//! [dependencies]
+//! rustbond = { version = "0.1", features = ["netlink"] }
+//! ```
 
 mod error;
 mod proto;
@@ -68,13 +77,14 @@ mod types;
 mod wire;
 
 mod client;
-mod multi;
 mod peer;
 mod server;
 
-pub use client::{LoggingHandler, MetalBondClient, NoOpHandler};
+#[cfg(feature = "netlink")]
+pub mod netlink;
+
+pub use client::{ClientState, LoggingHandler, MetalBondClient, NoOpHandler, ServerId};
 pub use error::Error;
-pub use multi::{MultiServerClient, MultiServerState, ServerId};
 pub use route::{Route, RouteTable};
 pub use server::{MetalBondServer, ServerConfig, ServerState};
 pub use types::{

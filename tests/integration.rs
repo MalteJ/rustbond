@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rustbond::{
-    Destination, MetalBondClient, MetalBondServer, MultiServerClient, MultiServerState, NextHop,
+    ClientState, Destination, MetalBondClient, MetalBondServer, NextHop,
     NextHopType, Route, RouteHandler, ServerConfig, Vni,
 };
 use tokio::sync::mpsc;
@@ -93,7 +93,7 @@ async fn test_client_connects_to_server() {
     // Create and connect client
     let handler = CountingHandler::new();
     let handler = Arc::new(handler);
-    let client = MetalBondClient::connect("[::1]:14711", handler.clone());
+    let client = MetalBondClient::connect(&["[::1]:14711"], handler.clone());
 
     // Wait for connection
     let result = timeout(Duration::from_secs(5), client.wait_established()).await;
@@ -118,7 +118,7 @@ async fn test_client_subscribe_and_announce() {
     // Create and connect client
     let handler = CountingHandler::new();
     let handler = Arc::new(handler);
-    let client = MetalBondClient::connect("[::1]:14712", handler.clone());
+    let client = MetalBondClient::connect(&["[::1]:14712"], handler.clone());
 
     // Wait for connection
     client.wait_established().await.unwrap();
@@ -159,7 +159,7 @@ async fn test_route_distribution_between_clients() {
         add_tx: add_tx1,
         remove_tx: remove_tx1,
     };
-    let client1 = MetalBondClient::connect("[::1]:14713", handler1);
+    let client1 = MetalBondClient::connect(&["[::1]:14713"], handler1);
     client1.wait_established().await.unwrap();
     client1.subscribe(Vni(100)).await.unwrap();
 
@@ -170,7 +170,7 @@ async fn test_route_distribution_between_clients() {
         add_tx: add_tx2,
         remove_tx: remove_tx2,
     };
-    let client2 = MetalBondClient::connect("[::1]:14713", handler2);
+    let client2 = MetalBondClient::connect(&["[::1]:14713"], handler2);
     client2.wait_established().await.unwrap();
     client2.subscribe(Vni(100)).await.unwrap();
 
@@ -216,14 +216,14 @@ async fn test_route_withdrawal() {
         add_tx: add_tx1,
         remove_tx: remove_tx1,
     };
-    let client1 = MetalBondClient::connect("[::1]:14714", handler1);
+    let client1 = MetalBondClient::connect(&["[::1]:14714"], handler1);
     client1.wait_established().await.unwrap();
     client1.subscribe(Vni(100)).await.unwrap();
 
     // Create client 2 (announcer)
     let handler2 = CountingHandler::new();
     let handler2 = Arc::new(handler2);
-    let client2 = MetalBondClient::connect("[::1]:14714", handler2);
+    let client2 = MetalBondClient::connect(&["[::1]:14714"], handler2);
     client2.wait_established().await.unwrap();
     client2.subscribe(Vni(100)).await.unwrap();
 
@@ -270,7 +270,7 @@ async fn test_existing_routes_sent_on_subscribe() {
     // Client 1 announces a route before client 2 subscribes
     let handler1 = CountingHandler::new();
     let handler1 = Arc::new(handler1);
-    let client1 = MetalBondClient::connect("[::1]:14715", handler1);
+    let client1 = MetalBondClient::connect(&["[::1]:14715"], handler1);
     client1.wait_established().await.unwrap();
     client1.subscribe(Vni(100)).await.unwrap();
 
@@ -290,7 +290,7 @@ async fn test_existing_routes_sent_on_subscribe() {
         add_tx: add_tx2,
         remove_tx: remove_tx2,
     };
-    let client2 = MetalBondClient::connect("[::1]:14715", handler2);
+    let client2 = MetalBondClient::connect(&["[::1]:14715"], handler2);
     client2.wait_established().await.unwrap();
     client2.subscribe(Vni(100)).await.unwrap();
 
@@ -324,14 +324,14 @@ async fn test_explicit_route_withdrawal() {
         add_tx: add_tx1,
         remove_tx: remove_tx1,
     };
-    let client1 = MetalBondClient::connect("[::1]:14716", handler1);
+    let client1 = MetalBondClient::connect(&["[::1]:14716"], handler1);
     client1.wait_established().await.unwrap();
     client1.subscribe(Vni(100)).await.unwrap();
 
     // Client 2 announces a route
     let handler2 = CountingHandler::new();
     let handler2 = Arc::new(handler2);
-    let client2 = MetalBondClient::connect("[::1]:14716", handler2);
+    let client2 = MetalBondClient::connect(&["[::1]:14716"], handler2);
     client2.wait_established().await.unwrap();
     client2.subscribe(Vni(100)).await.unwrap();
 
@@ -388,7 +388,7 @@ async fn test_multiple_vnis() {
         add_tx: add_tx1,
         remove_tx: remove_tx1,
     };
-    let client1 = MetalBondClient::connect("[::1]:14717", handler1);
+    let client1 = MetalBondClient::connect(&["[::1]:14717"], handler1);
     client1.wait_established().await.unwrap();
     client1.subscribe(Vni(100)).await.unwrap();
 
@@ -399,14 +399,14 @@ async fn test_multiple_vnis() {
         add_tx: add_tx2,
         remove_tx: remove_tx2,
     };
-    let client2 = MetalBondClient::connect("[::1]:14717", handler2);
+    let client2 = MetalBondClient::connect(&["[::1]:14717"], handler2);
     client2.wait_established().await.unwrap();
     client2.subscribe(Vni(200)).await.unwrap();
 
     // Client 3 announces on VNI 100
     let handler3 = CountingHandler::new();
     let handler3 = Arc::new(handler3);
-    let client3 = MetalBondClient::connect("[::1]:14717", handler3);
+    let client3 = MetalBondClient::connect(&["[::1]:14717"], handler3);
     client3.wait_established().await.unwrap();
     client3.subscribe(Vni(100)).await.unwrap();
 
@@ -449,14 +449,14 @@ async fn test_nat_route_type() {
         add_tx: add_tx1,
         remove_tx: remove_tx1,
     };
-    let client1 = MetalBondClient::connect("[::1]:14718", handler1);
+    let client1 = MetalBondClient::connect(&["[::1]:14718"], handler1);
     client1.wait_established().await.unwrap();
     client1.subscribe(Vni(100)).await.unwrap();
 
     // Client 2 announces NAT route
     let handler2 = CountingHandler::new();
     let handler2 = Arc::new(handler2);
-    let client2 = MetalBondClient::connect("[::1]:14718", handler2);
+    let client2 = MetalBondClient::connect(&["[::1]:14718"], handler2);
     client2.wait_established().await.unwrap();
     client2.subscribe(Vni(100)).await.unwrap();
 
@@ -496,14 +496,14 @@ async fn test_load_balancer_route_type() {
         add_tx: add_tx1,
         remove_tx: remove_tx1,
     };
-    let client1 = MetalBondClient::connect("[::1]:14719", handler1);
+    let client1 = MetalBondClient::connect(&["[::1]:14719"], handler1);
     client1.wait_established().await.unwrap();
     client1.subscribe(Vni(100)).await.unwrap();
 
     // Client 2 announces LB route
     let handler2 = CountingHandler::new();
     let handler2 = Arc::new(handler2);
-    let client2 = MetalBondClient::connect("[::1]:14719", handler2);
+    let client2 = MetalBondClient::connect(&["[::1]:14719"], handler2);
     client2.wait_established().await.unwrap();
     client2.subscribe(Vni(100)).await.unwrap();
 
@@ -541,14 +541,14 @@ async fn test_ipv6_destination() {
         add_tx: add_tx1,
         remove_tx: remove_tx1,
     };
-    let client1 = MetalBondClient::connect("[::1]:14720", handler1);
+    let client1 = MetalBondClient::connect(&["[::1]:14720"], handler1);
     client1.wait_established().await.unwrap();
     client1.subscribe(Vni(100)).await.unwrap();
 
     // Client 2 announces IPv6 route
     let handler2 = CountingHandler::new();
     let handler2 = Arc::new(handler2);
-    let client2 = MetalBondClient::connect("[::1]:14720", handler2);
+    let client2 = MetalBondClient::connect(&["[::1]:14720"], handler2);
     client2.wait_established().await.unwrap();
     client2.subscribe(Vni(100)).await.unwrap();
 
@@ -587,7 +587,7 @@ async fn test_multi_server_connects_all() {
     // Create multi-server client
     let handler = CountingHandler::new();
     let handler = Arc::new(handler);
-    let client = MultiServerClient::connect(&["[::1]:14801", "[::1]:14802"], handler.clone());
+    let client = MetalBondClient::connect(&["[::1]:14801", "[::1]:14802"], handler.clone());
 
     // Wait for all connections
     let result = timeout(Duration::from_secs(5), client.wait_all_established()).await;
@@ -597,7 +597,7 @@ async fn test_multi_server_connects_all() {
     // Verify state
     let state = client.state().await;
     assert!(
-        matches!(state, MultiServerState::FullyConnected),
+        matches!(state, ClientState::FullyConnected),
         "State should be FullyConnected, got {:?}",
         state
     );
@@ -623,19 +623,19 @@ async fn test_multi_server_ecmp_deduplication() {
 
     // Create multi-server client with counting handler
     let handler = Arc::new(CountingHandler::new());
-    let client = MultiServerClient::connect(&["[::1]:14803", "[::1]:14804"], handler.clone());
+    let client = MetalBondClient::connect(&["[::1]:14803", "[::1]:14804"], handler.clone());
     client.wait_all_established().await.unwrap();
     client.subscribe(Vni(100)).await.unwrap();
 
     // Create announcer on server 1
     let announcer1_handler = CountingHandler::new();
-    let announcer1 = MetalBondClient::connect("[::1]:14803", Arc::new(announcer1_handler));
+    let announcer1 = MetalBondClient::connect(&["[::1]:14803"], Arc::new(announcer1_handler));
     announcer1.wait_established().await.unwrap();
     announcer1.subscribe(Vni(100)).await.unwrap();
 
     // Create announcer on server 2
     let announcer2_handler = CountingHandler::new();
-    let announcer2 = MetalBondClient::connect("[::1]:14804", Arc::new(announcer2_handler));
+    let announcer2 = MetalBondClient::connect(&["[::1]:14804"], Arc::new(announcer2_handler));
     announcer2.wait_established().await.unwrap();
     announcer2.subscribe(Vni(100)).await.unwrap();
 
@@ -684,17 +684,17 @@ async fn test_multi_server_different_hops_are_separate() {
 
     // Create multi-server client with counting handler
     let handler = Arc::new(CountingHandler::new());
-    let client = MultiServerClient::connect(&["[::1]:14805", "[::1]:14806"], handler.clone());
+    let client = MetalBondClient::connect(&["[::1]:14805", "[::1]:14806"], handler.clone());
     client.wait_all_established().await.unwrap();
     client.subscribe(Vni(100)).await.unwrap();
 
     // Create announcer on server 1
-    let announcer1 = MetalBondClient::connect("[::1]:14805", Arc::new(CountingHandler::new()));
+    let announcer1 = MetalBondClient::connect(&["[::1]:14805"], Arc::new(CountingHandler::new()));
     announcer1.wait_established().await.unwrap();
     announcer1.subscribe(Vni(100)).await.unwrap();
 
     // Create announcer on server 2
-    let announcer2 = MetalBondClient::connect("[::1]:14806", Arc::new(CountingHandler::new()));
+    let announcer2 = MetalBondClient::connect(&["[::1]:14806"], Arc::new(CountingHandler::new()));
     announcer2.wait_established().await.unwrap();
     announcer2.subscribe(Vni(100)).await.unwrap();
 
@@ -742,16 +742,16 @@ async fn test_multi_server_partial_withdraw() {
 
     // Create multi-server client
     let handler = Arc::new(CountingHandler::new());
-    let client = MultiServerClient::connect(&["[::1]:14807", "[::1]:14808"], handler.clone());
+    let client = MetalBondClient::connect(&["[::1]:14807", "[::1]:14808"], handler.clone());
     client.wait_all_established().await.unwrap();
     client.subscribe(Vni(100)).await.unwrap();
 
     // Create announcers
-    let announcer1 = MetalBondClient::connect("[::1]:14807", Arc::new(CountingHandler::new()));
+    let announcer1 = MetalBondClient::connect(&["[::1]:14807"], Arc::new(CountingHandler::new()));
     announcer1.wait_established().await.unwrap();
     announcer1.subscribe(Vni(100)).await.unwrap();
 
-    let announcer2 = MetalBondClient::connect("[::1]:14808", Arc::new(CountingHandler::new()));
+    let announcer2 = MetalBondClient::connect(&["[::1]:14808"], Arc::new(CountingHandler::new()));
     announcer2.wait_established().await.unwrap();
     announcer2.subscribe(Vni(100)).await.unwrap();
 
@@ -808,16 +808,16 @@ async fn test_multi_server_full_withdraw() {
 
     // Create multi-server client
     let handler = Arc::new(CountingHandler::new());
-    let client = MultiServerClient::connect(&["[::1]:14809", "[::1]:14810"], handler.clone());
+    let client = MetalBondClient::connect(&["[::1]:14809", "[::1]:14810"], handler.clone());
     client.wait_all_established().await.unwrap();
     client.subscribe(Vni(100)).await.unwrap();
 
     // Create announcers
-    let announcer1 = MetalBondClient::connect("[::1]:14809", Arc::new(CountingHandler::new()));
+    let announcer1 = MetalBondClient::connect(&["[::1]:14809"], Arc::new(CountingHandler::new()));
     announcer1.wait_established().await.unwrap();
     announcer1.subscribe(Vni(100)).await.unwrap();
 
-    let announcer2 = MetalBondClient::connect("[::1]:14810", Arc::new(CountingHandler::new()));
+    let announcer2 = MetalBondClient::connect(&["[::1]:14810"], Arc::new(CountingHandler::new()));
     announcer2.wait_established().await.unwrap();
     announcer2.subscribe(Vni(100)).await.unwrap();
 
@@ -876,7 +876,7 @@ async fn test_multi_server_subscribe_announce_to_all() {
 
     // Create multi-server client
     let handler = Arc::new(CountingHandler::new());
-    let client = MultiServerClient::connect(&["[::1]:14811", "[::1]:14812"], handler.clone());
+    let client = MetalBondClient::connect(&["[::1]:14811", "[::1]:14812"], handler.clone());
     client.wait_all_established().await.unwrap();
 
     // Subscribe and announce - should go to all servers

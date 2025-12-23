@@ -65,8 +65,6 @@ impl PeerState {
 
 /// A MetalBond peer connection.
 pub struct Peer {
-    /// Remote server address.
-    remote_addr: String,
     /// Shared state.
     state: Arc<PeerState>,
     /// Command sender to the peer task.
@@ -88,11 +86,7 @@ impl Peer {
             peer_task(task_addr, task_state, cmd_rx, handler).await;
         });
 
-        let peer = Self {
-            remote_addr,
-            state,
-            cmd_tx,
-        };
+        let peer = Self { state, cmd_tx };
 
         (peer, handle)
     }
@@ -100,11 +94,6 @@ impl Peer {
     /// Returns the current connection state.
     pub async fn get_state(&self) -> ConnectionState {
         *self.state.state.read().await
-    }
-
-    /// Returns the remote address.
-    pub fn remote_addr(&self) -> &str {
-        &self.remote_addr
     }
 
     /// Subscribes to a VNI.
@@ -137,11 +126,6 @@ impl Peer {
             .send(PeerCommand::Shutdown)
             .await
             .map_err(|_| Error::Closed)
-    }
-
-    /// Returns a reference to the shared state.
-    pub fn state(&self) -> &Arc<PeerState> {
-        &self.state
     }
 }
 
