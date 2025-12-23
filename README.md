@@ -6,11 +6,46 @@ MetalBond is a route distribution protocol for managing virtual network routes a
 
 ## Features
 
-- Async TCP client using Tokio
-- Automatic reconnection on connection loss
+- Async TCP client and server using Tokio
+- Automatic reconnection on connection loss (client)
 - VNI-based subscription model for selective route updates
 - Route announcement and withdrawal
 - Keepalive handling with configurable intervals
+- Support for STANDARD, NAT, and LOADBALANCER_TARGET route types
+- Full interoperability with Go MetalBond implementation
+
+## Quick Start
+
+### Running the Server
+
+```bash
+cargo run --example server
+```
+
+This starts a MetalBond server on `[::]:4711`.
+
+### Running a Client
+
+```bash
+# Connect to server, subscribe to VNI 100, and announce a route
+cargo run --example client -- [::1]:4711 100 10.0.1.0/24 2001:db8::1
+```
+
+### Running Tests
+
+```bash
+# Run all tests (unit + integration)
+cargo test
+
+# Run only unit tests
+cargo test --lib
+
+# Run only integration tests
+cargo test --test integration
+
+# Run a specific test
+cargo test test_route_distribution_between_clients
+```
 
 ## Installation
 
@@ -22,6 +57,26 @@ rustbond = "0.1"
 ```
 
 ## Usage
+
+### Server
+
+```rust
+use rustbond::{MetalBondServer, ServerConfig};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let server = MetalBondServer::start("[::]:4711", ServerConfig::default()).await?;
+    println!("Server running on [::]:4711");
+
+    // Wait for shutdown signal
+    tokio::signal::ctrl_c().await?;
+    server.shutdown().await?;
+
+    Ok(())
+}
+```
+
+### Client
 
 ```rust
 use rustbond::{MetalBondClient, RouteHandler, Route, Vni, Destination, NextHop};
@@ -104,22 +159,45 @@ MetalBond messages use a 4-byte header followed by a protobuf payload:
     │<───────── UPDATE (routes) ─────────│
 ```
 
-## Testing with Go MetalBond
+## Interoperability with Go MetalBond
 
-You can test this Rust client against the Go MetalBond server:
+RustBond is fully interoperable with the Go MetalBond implementation.
+
+### Rust Server with Go Client
 
 ```bash
-# Build and run the Go server
+# Terminal 1: Start Rust server
+cargo run --example server
+
+# Terminal 2: Connect Go client
 cd /path/to/metalbond
-go build -o metalbond ./cmd
+./metalbond client --server [::1]:4711 --subscribe 100 --announce "100#10.0.1.0/24#2001:db8::1"
+```
+
+### Go Server with Rust Client
+
+```bash
+# Terminal 1: Start Go server
+cd /path/to/metalbond
 ./metalbond server --listen [::]:4711
 
-# In another terminal, run a Go client to announce routes
-./metalbond client --server [::1]:4711 --subscribe 100 --announce 10.0.0.0/24
+# Terminal 2: Connect Rust client
+cargo run --example client -- [::1]:4711 100 10.0.1.0/24 2001:db8::1
+```
 
-# Run the Rust client
-cd /path/to/rustbond
-cargo run --example client -- [::1]:4711 100
+### Route Types
+
+The client example supports all route types:
+
+```bash
+# Standard route
+cargo run --example client -- [::1]:4711 100 10.0.1.0/24 2001:db8::1
+
+# NAT route with port range
+cargo run --example client -- [::1]:4711 100 10.0.1.0/24 2001:db8::1 nat 30000 40000
+
+# Load balancer target
+cargo run --example client -- [::1]:4711 100 10.0.1.0/24 2001:db8::1 lb
 ```
 
 ## License
