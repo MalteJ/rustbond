@@ -31,9 +31,13 @@ impl<H: RouteHandler> MetalBondClient<H> {
     ///
     /// # Example
     ///
-    /// ```ignore
-    /// let client = MetalBondClient::connect("[::1]:4711", handler);
+    /// ```no_run
+    /// # use rustbond::{MetalBondClient, NoOpHandler};
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = MetalBondClient::connect("[::1]:4711", NoOpHandler);
     /// client.wait_established().await?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn connect(addr: impl Into<String>, handler: H) -> Self {
         let handler = Arc::new(handler);

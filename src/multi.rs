@@ -12,7 +12,14 @@
 //!
 //! ## Example
 //!
-//! ```ignore
+//! ```no_run
+//! # use rustbond::{MultiServerClient, RouteHandler, Route, Vni};
+//! # struct MyHandler;
+//! # impl RouteHandler for MyHandler {
+//! #     fn add_route(&self, _: Vni, _: Route) {}
+//! #     fn remove_route(&self, _: Vni, _: Route) {}
+//! # }
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = MultiServerClient::connect(
 //!     &["[::1]:4711", "[::1]:4712"],
 //!     MyHandler,
@@ -20,6 +27,8 @@
 //!
 //! client.wait_any_established().await?;
 //! client.subscribe(Vni(100)).await?;
+//! # Ok(())
+//! # }
 //! ```
 
 use std::collections::{HashMap, HashSet};
@@ -278,10 +287,11 @@ impl<H: RouteHandler> MultiServerClient<H> {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # use rustbond::{MultiServerClient, NoOpHandler};
     /// let client = MultiServerClient::connect(
     ///     &["[::1]:4711", "[::1]:4712", "[::1]:4713"],
-    ///     MyHandler,
+    ///     NoOpHandler,
     /// );
     /// ```
     pub fn connect(servers: &[&str], handler: H) -> Self {

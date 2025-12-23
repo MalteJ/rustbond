@@ -80,8 +80,12 @@ impl MetalBondServer {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # use rustbond::{MetalBondServer, ServerConfig};
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let server = MetalBondServer::start("[::]:4711", ServerConfig::default()).await?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn start(
         listen_addr: impl AsRef<str>,

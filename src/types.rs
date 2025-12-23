@@ -13,7 +13,7 @@ use crate::proto;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```no_run
 /// use rustbond::Vni;
 ///
 /// let vni = Vni(100);

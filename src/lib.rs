@@ -6,14 +6,18 @@
 //!
 //! ## Server
 //!
-//! ```ignore
+//! ```no_run
+//! # use rustbond::{MetalBondServer, ServerConfig};
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let server = MetalBondServer::start("[::]:4711", ServerConfig::default()).await?;
 //! // ... server.shutdown().await?;
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ## Client
 //!
-//! ```ignore
+//! ```no_run
 //! use rustbond::{MetalBondClient, RouteHandler, Route, Vni};
 //!
 //! struct MyHandler;
@@ -22,19 +26,31 @@
 //!     fn remove_route(&self, vni: Vni, route: Route) { /* handle remove */ }
 //! }
 //!
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = MetalBondClient::connect("[::1]:4711", MyHandler);
 //! client.wait_established().await?;
 //! client.subscribe(Vni(100)).await?;
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ## Multi-Server (HA)
 //!
 //! For high availability, connect to multiple servers simultaneously:
 //!
-//! ```ignore
+//! ```no_run
+//! # use rustbond::{MultiServerClient, RouteHandler, Route, Vni};
+//! # struct MyHandler;
+//! # impl RouteHandler for MyHandler {
+//! #     fn add_route(&self, _: Vni, _: Route) {}
+//! #     fn remove_route(&self, _: Vni, _: Route) {}
+//! # }
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = MultiServerClient::connect(&["[::1]:4711", "[::1]:4712"], MyHandler);
 //! client.wait_any_established().await?;
 //! // Routes are deduplicated across servers; ECMP supported
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! # Features
