@@ -57,28 +57,28 @@ client.wait_any_established().await?;
 cargo run --example server
 
 # Connect client to VNI 100
-cargo run --example client -- [::1]:4711 100
+cargo run --example client -- -s [::1]:4711 -v 100
 
 # Announce a route
-cargo run --example client -- [::1]:4711 100 "10.0.1.0/24#2001:db8::1"
+cargo run --example client -- -s [::1]:4711 -v 100 -a "10.0.1.0/24@2001:db8::1"
 
-# Multi-server HA
-cargo run --example multi_client -- [::1]:4711 [::1]:4712 100
+# Multi-server HA (just add more -s flags)
+cargo run --example client -- -s [::1]:4711 -s [::1]:4712 -v 100
 ```
 
 ## Route Types
 
-Announcement format: `prefix#nexthop[#type][#fromPort#toPort]`
+Announcement format: `prefix@nexthop[:type[:fromPort:toPort]]`
 
 ```bash
 # Standard route (default)
-"10.0.1.0/24#2001:db8::1"
+"10.0.1.0/24@2001:db8::1"
 
 # NAT route with port range
-"10.0.2.0/24#2001:db8::2#NAT#1024#2048"
+"10.0.2.0/24@2001:db8::2:nat:1024:2048"
 
 # Load balancer target
-"10.0.3.0/24#2001:db8::3#LB"
+"10.0.3.0/24@2001:db8::3:lb"
 ```
 
 ## Testing
