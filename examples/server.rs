@@ -60,10 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut interval = tokio::time::interval(Duration::from_secs(10));
         loop {
             interval.tick().await;
-            let peer_count = state.peers.read().await.len();
-            let routing = state.routing.read().await;
-            let route_count = routing.routes.len();
-            let sub_count: usize = routing.subscriptions.values().map(|s| s.len()).sum();
+            let (peer_count, route_count, sub_count) = state.stats().await;
             println!(
                 "[status] peers: {}, routes: {}, subscriptions: {}",
                 peer_count, route_count, sub_count

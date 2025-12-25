@@ -116,6 +116,19 @@ pub struct PeerHandle {
     pub state: ConnectionState,
 }
 
+impl ServerState {
+    /// Returns server statistics: (peer_count, route_count, subscription_count).
+    pub async fn stats(&self) -> (usize, usize, usize) {
+        let peer_count = self.peers.read().await.len();
+        let (response_tx, response_rx) = oneshot::channel();
+        let _ = self.routing.tx.send(RoutingCommand::GetStats { response_tx }).await;
+        match response_rx.await {
+            Ok((routes, _owners, _peers, subs)) => (peer_count, routes, subs),
+            Err(_) => (peer_count, 0, 0),
+        }
+    }
+}
+
 // ============================================================================
 // Routing Actor
 // ============================================================================
@@ -150,9 +163,9 @@ enum RoutingCommand {
         destination: Destination,
         next_hop: NextHop,
     },
-    /// Get statistics.
+    /// Get statistics: (routes, owners, peers, subscriptions).
     GetStats {
-        response_tx: oneshot::Sender<(usize, usize, usize)>,
+        response_tx: oneshot::Sender<(usize, usize, usize, usize)>,
     },
 }
 
@@ -204,10 +217,12 @@ impl RoutingActor {
                     self.handle_update(from_addr, action, vni, destination, next_hop);
                 }
                 RoutingCommand::GetStats { response_tx } => {
+                    let sub_count: usize = self.subscriptions.values().map(|s| s.len()).sum();
                     let stats = (
                         self.routes.len(),
                         self.route_owners.len(),
                         self.peers.len(),
+                        sub_count,
                     );
                     let _ = response_tx.send(stats);
                 }
@@ -478,7 +493,7 @@ impl MetalBondServer {
         let (response_tx, response_rx) = oneshot::channel();
         let _ = self.routing.tx.send(RoutingCommand::GetStats { response_tx }).await;
         match response_rx.await {
-            Ok((routes, owners, _peers)) => (routes, owners),
+            Ok((routes, owners, _peers, _subs)) => (routes, owners),
             Err(_) => (0, 0),
         }
     }
