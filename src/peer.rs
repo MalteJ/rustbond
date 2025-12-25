@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, watch, RwLock};
 use tokio::time::{interval, timeout, Instant};
 
 use crate::route::RouteTable;
@@ -42,24 +42,41 @@ pub enum PeerCommand {
 
 /// Internal state shared between the peer task and the client.
 pub struct PeerState {
-    /// Current connection state.
-    pub state: RwLock<ConnectionState>,
+    /// Connection state sender (for updates from peer task).
+    state_tx: watch::Sender<ConnectionState>,
+    /// Connection state receiver (for observation).
+    state_rx: watch::Receiver<ConnectionState>,
     /// Subscribed VNIs.
     pub subscriptions: RwLock<HashSet<Vni>>,
     /// Routes received from the server.
     pub received_routes: RouteTable,
-    /// Routes announced by this client.
-    pub announced_routes: RouteTable,
 }
 
 impl PeerState {
     fn new() -> Self {
+        let (state_tx, state_rx) = watch::channel(ConnectionState::Connecting);
         Self {
-            state: RwLock::new(ConnectionState::Connecting),
+            state_tx,
+            state_rx,
             subscriptions: RwLock::new(HashSet::new()),
             received_routes: RouteTable::new(),
-            announced_routes: RouteTable::new(),
         }
+    }
+
+    /// Sets the connection state.
+    fn set_state(&self, state: ConnectionState) {
+        // Ignore send errors - receivers may have been dropped
+        let _ = self.state_tx.send(state);
+    }
+
+    /// Returns the current connection state.
+    pub fn get_state(&self) -> ConnectionState {
+        *self.state_rx.borrow()
+    }
+
+    /// Returns a receiver for watching state changes.
+    pub fn state_receiver(&self) -> watch::Receiver<ConnectionState> {
+        self.state_rx.clone()
     }
 }
 
@@ -73,9 +90,13 @@ pub struct Peer {
 
 impl Peer {
     /// Creates a new peer and starts the connection task.
+    ///
+    /// The `announced_routes` parameter should be the client's shared route table
+    /// so that routes can be re-announced after reconnection.
     pub fn new<H: RouteHandler>(
         remote_addr: String,
         handler: Arc<H>,
+        announced_routes: RouteTable,
     ) -> (Self, tokio::task::JoinHandle<()>) {
         let state = Arc::new(PeerState::new());
         let (cmd_tx, cmd_rx) = mpsc::channel(256);
@@ -83,7 +104,7 @@ impl Peer {
         let task_state = state.clone();
         let task_addr = remote_addr.clone();
         let handle = tokio::spawn(async move {
-            peer_task(task_addr, task_state, cmd_rx, handler).await;
+            peer_task(task_addr, task_state, cmd_rx, handler, announced_routes).await;
         });
 
         let peer = Self { state, cmd_tx };
@@ -92,8 +113,16 @@ impl Peer {
     }
 
     /// Returns the current connection state.
-    pub async fn get_state(&self) -> ConnectionState {
-        *self.state.state.read().await
+    pub fn get_state(&self) -> ConnectionState {
+        self.state.get_state()
+    }
+
+    /// Returns a receiver for watching state changes.
+    ///
+    /// Use this with `wait_for()` to efficiently wait for state transitions
+    /// instead of polling.
+    pub fn state_receiver(&self) -> watch::Receiver<ConnectionState> {
+        self.state.state_receiver()
     }
 
     /// Subscribes to a VNI.
@@ -135,17 +164,18 @@ async fn peer_task<H: RouteHandler>(
     state: Arc<PeerState>,
     mut cmd_rx: mpsc::Receiver<PeerCommand>,
     handler: Arc<H>,
+    announced_routes: RouteTable,
 ) {
     loop {
         // Try to connect
-        *state.state.write().await = ConnectionState::Connecting;
+        state.set_state(ConnectionState::Connecting);
         tracing::info!(addr = %remote_addr, "connecting to MetalBond server");
 
         let stream = match TcpStream::connect(&remote_addr).await {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(addr = %remote_addr, error = %e, "failed to connect, retrying");
-                *state.state.write().await = ConnectionState::Retry;
+                state.set_state(ConnectionState::Retry);
 
                 // Wait for retry interval or shutdown command
                 let retry_delay = Duration::from_secs(
@@ -158,7 +188,7 @@ async fn peer_task<H: RouteHandler>(
                     Some(cmd) = cmd_rx.recv() => {
                         if matches!(cmd, PeerCommand::Shutdown) {
                             tracing::info!("peer shutdown requested");
-                            *state.state.write().await = ConnectionState::Closed;
+                            state.set_state(ConnectionState::Closed);
                             return;
                         }
                     }
@@ -168,12 +198,12 @@ async fn peer_task<H: RouteHandler>(
         };
 
         // Run the connection
-        if let Err(e) = run_connection(stream, &state, &mut cmd_rx, &handler).await {
+        if let Err(e) = run_connection(stream, &state, &mut cmd_rx, &handler, &announced_routes).await {
             tracing::warn!(addr = %remote_addr, error = %e, "connection error");
         }
 
         // Check if we should shutdown or retry
-        let current_state = *state.state.read().await;
+        let current_state = state.get_state();
         if current_state == ConnectionState::Closed {
             return;
         }
@@ -185,7 +215,7 @@ async fn peer_task<H: RouteHandler>(
         state.received_routes.clear();
 
         // Retry
-        *state.state.write().await = ConnectionState::Retry;
+        state.set_state(ConnectionState::Retry);
         let retry_delay = Duration::from_secs(
             RETRY_INTERVAL_MIN
                 + rand::random::<u64>() % (RETRY_INTERVAL_MAX - RETRY_INTERVAL_MIN + 1),
@@ -196,7 +226,7 @@ async fn peer_task<H: RouteHandler>(
             Some(cmd) = cmd_rx.recv() => {
                 if matches!(cmd, PeerCommand::Shutdown) {
                     tracing::info!("peer shutdown requested");
-                    *state.state.write().await = ConnectionState::Closed;
+                    state.set_state(ConnectionState::Closed);
                     return;
                 }
             }
@@ -210,6 +240,7 @@ async fn run_connection<H: RouteHandler>(
     state: &Arc<PeerState>,
     cmd_rx: &mut mpsc::Receiver<PeerCommand>,
     handler: &Arc<H>,
+    announced_routes: &RouteTable,
 ) -> Result<()> {
     let keepalive_interval = DEFAULT_KEEPALIVE_INTERVAL;
 
@@ -219,7 +250,7 @@ async fn run_connection<H: RouteHandler>(
         is_server: false,
     };
     send_message(&mut stream, &hello).await?;
-    *state.state.write().await = ConnectionState::HelloSent;
+    state.set_state(ConnectionState::HelloSent);
     tracing::debug!("sent HELLO");
 
     // Wait for HELLO response
@@ -227,7 +258,7 @@ async fn run_connection<H: RouteHandler>(
         Some(interval) => interval,
         None => return Err(Error::Protocol("expected HELLO response".into())),
     };
-    *state.state.write().await = ConnectionState::HelloReceived;
+    state.set_state(ConnectionState::HelloReceived);
     tracing::debug!(server_keepalive, "received HELLO");
 
     // Use the minimum keepalive interval
@@ -244,7 +275,7 @@ async fn run_connection<H: RouteHandler>(
     if !matches!(msg, Message::Keepalive) {
         return Err(Error::Protocol("expected KEEPALIVE response".into()));
     }
-    *state.state.write().await = ConnectionState::Established;
+    state.set_state(ConnectionState::Established);
     tracing::info!("connection established");
 
     // Re-subscribe to VNIs and re-announce routes
@@ -257,14 +288,15 @@ async fn run_connection<H: RouteHandler>(
         }
     }
     {
-        for (vni, route) in state.announced_routes.get_all_routes() {
+        for (vni, route) in announced_routes.get_all_routes() {
             let msg = Message::Update {
                 action: Action::Add,
                 vni,
-                destination: route.destination,
-                next_hop: route.next_hop,
+                destination: route.destination.clone(),
+                next_hop: route.next_hop.clone(),
             };
             send_message(&mut stream, &msg).await?;
+            tracing::debug!(%vni, %route, "re-announced route");
         }
     }
 
@@ -341,7 +373,7 @@ async fn run_connection<H: RouteHandler>(
                     }
                     PeerCommand::Shutdown => {
                         tracing::info!("peer shutdown requested");
-                        *state.state.write().await = ConnectionState::Closed;
+                        state.set_state(ConnectionState::Closed);
                         return Ok(());
                     }
                 }

@@ -41,7 +41,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::RwLock;
+use futures::future::select_all;
+use tokio::sync::{watch, RwLock};
 
 use crate::peer::Peer;
 use crate::route::{Route, RouteTable};
@@ -328,7 +329,11 @@ impl<H: RouteHandler> MetalBondClient<H> {
                 shared: shared.clone(),
             };
 
-            let (peer, task) = Peer::new(addr.to_string(), Arc::new(wrapper));
+            let (peer, task) = Peer::new(
+                addr.to_string(),
+                Arc::new(wrapper),
+                shared.announced_routes.clone(),
+            );
             peers.insert(server_id, peer);
             server_addrs.insert(server_id, addr.to_string());
             tasks.push(task);
@@ -349,12 +354,12 @@ impl<H: RouteHandler> MetalBondClient<H> {
     }
 
     /// Returns the current connection state.
-    pub async fn state(&self) -> ClientState {
+    pub fn state(&self) -> ClientState {
         let mut connected = 0;
         let mut any_closed = false;
 
         for peer in self.peers.values() {
-            match peer.get_state().await {
+            match peer.get_state() {
                 ConnectionState::Established => connected += 1,
                 ConnectionState::Closed => any_closed = true,
                 _ => {}
@@ -380,12 +385,20 @@ impl<H: RouteHandler> MetalBondClient<H> {
     /// For single-server setups, this is equivalent to waiting for the connection.
     /// For multi-server setups, returns as soon as any server connects.
     pub async fn wait_any_established(&self) -> Result<()> {
+        // Collect state receivers from all peers
+        let mut receivers: Vec<watch::Receiver<ConnectionState>> = self
+            .peers
+            .values()
+            .map(|p| p.state_receiver())
+            .collect();
+
         loop {
+            // Check current states
             let mut any_established = false;
             let mut all_closed = true;
 
-            for peer in self.peers.values() {
-                match peer.get_state().await {
+            for rx in &receivers {
+                match *rx.borrow() {
                     ConnectionState::Established => {
                         any_established = true;
                         all_closed = false;
@@ -405,18 +418,42 @@ impl<H: RouteHandler> MetalBondClient<H> {
                 return Err(Error::Closed);
             }
 
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            // Wait for any state to change
+            // We need to handle the borrow carefully - select_all consumes the futures
+            let futures: Vec<_> = receivers
+                .iter_mut()
+                .map(|rx| Box::pin(rx.changed()))
+                .collect();
+
+            let (result, _, remaining) = select_all(futures).await;
+            drop(remaining); // Drop remaining futures to release borrows
+
+            // If all senders are dropped, the connection is closed
+            if result.is_err() {
+                // Check if all are closed now
+                if receivers.iter().all(|rx| *rx.borrow() == ConnectionState::Closed) {
+                    return Err(Error::Closed);
+                }
+            }
         }
     }
 
     /// Waits until all servers are established.
     pub async fn wait_all_established(&self) -> Result<()> {
+        // Collect state receivers from all peers
+        let mut receivers: Vec<watch::Receiver<ConnectionState>> = self
+            .peers
+            .values()
+            .map(|p| p.state_receiver())
+            .collect();
+
         loop {
+            // Check current states
             let mut all_established = true;
             let mut any_closed = false;
 
-            for peer in self.peers.values() {
-                match peer.get_state().await {
+            for rx in &receivers {
+                match *rx.borrow() {
                     ConnectionState::Established => {}
                     ConnectionState::Closed => any_closed = true,
                     _ => all_established = false,
@@ -431,7 +468,21 @@ impl<H: RouteHandler> MetalBondClient<H> {
                 return Err(Error::Closed);
             }
 
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            // Wait for any state to change
+            let futures: Vec<_> = receivers
+                .iter_mut()
+                .map(|rx| Box::pin(rx.changed()))
+                .collect();
+
+            let (result, _, remaining) = select_all(futures).await;
+            drop(remaining); // Drop remaining futures to release borrows
+
+            // If sender dropped unexpectedly, check state
+            if result.is_err() {
+                if receivers.iter().any(|rx| *rx.borrow() == ConnectionState::Closed) {
+                    return Err(Error::Closed);
+                }
+            }
         }
     }
 
@@ -462,13 +513,10 @@ impl<H: RouteHandler> MetalBondClient<H> {
     }
 
     /// Returns true if at least one server is connected.
-    pub async fn is_established(&self) -> bool {
-        for peer in self.peers.values() {
-            if peer.get_state().await == ConnectionState::Established {
-                return true;
-            }
-        }
-        false
+    pub fn is_established(&self) -> bool {
+        self.peers
+            .values()
+            .any(|p| p.state_receiver().borrow().clone() == ConnectionState::Established)
     }
 
     /// Subscribes to a VNI on all connected servers.
@@ -477,7 +525,7 @@ impl<H: RouteHandler> MetalBondClient<H> {
 
         let mut sent_any = false;
         for (server_id, peer) in &self.peers {
-            if peer.get_state().await == ConnectionState::Established {
+            if peer.get_state() == ConnectionState::Established {
                 if let Err(e) = peer.subscribe(vni).await {
                     tracing::warn!(
                         server = %server_id,
@@ -546,7 +594,7 @@ impl<H: RouteHandler> MetalBondClient<H> {
 
         let mut sent_any = false;
         for (server_id, peer) in &self.peers {
-            if peer.get_state().await == ConnectionState::Established {
+            if peer.get_state() == ConnectionState::Established {
                 if let Err(e) = peer.send_update(msg.clone()).await {
                     tracing::warn!(
                         server = %server_id,
@@ -638,12 +686,11 @@ impl<H: RouteHandler> MetalBondClient<H> {
     }
 
     /// Returns per-server connection states.
-    pub async fn server_states(&self) -> HashMap<ServerId, ConnectionState> {
-        let mut states = HashMap::new();
-        for (&id, peer) in &self.peers {
-            states.insert(id, peer.get_state().await);
-        }
-        states
+    pub fn server_states(&self) -> HashMap<ServerId, ConnectionState> {
+        self.peers
+            .iter()
+            .map(|(&id, peer)| (id, peer.get_state()))
+            .collect()
     }
 
     /// Returns the number of configured servers.
@@ -652,14 +699,11 @@ impl<H: RouteHandler> MetalBondClient<H> {
     }
 
     /// Returns the number of currently connected servers.
-    pub async fn connected_count(&self) -> usize {
-        let mut count = 0;
-        for peer in self.peers.values() {
-            if peer.get_state().await == ConnectionState::Established {
-                count += 1;
-            }
-        }
-        count
+    pub fn connected_count(&self) -> usize {
+        self.peers
+            .values()
+            .filter(|p| p.get_state() == ConnectionState::Established)
+            .count()
     }
 
     /// Returns the address for a server ID.

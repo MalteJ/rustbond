@@ -283,7 +283,7 @@ async fn run_client<H: RouteHandler>(args: Args, handler: H) -> Result<(), Box<d
     println!("\nWaiting for connection...");
     client.wait_established_timeout(Duration::from_secs(10)).await?;
 
-    match client.state().await {
+    match client.state() {
         ClientState::FullyConnected => {
             if args.servers.len() == 1 {
                 println!("Connected!");

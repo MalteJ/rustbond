@@ -1,6 +1,7 @@
 //! Route and route table types.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use parking_lot::RwLock;
 
@@ -31,12 +32,15 @@ impl std::fmt::Display for Route {
     }
 }
 
-/// A thread-safe route table.
+/// A thread-safe, cloneable route table.
 ///
 /// Structure: `VNI -> Destination -> Set<NextHop>`
-#[derive(Debug, Default)]
+///
+/// Cloning a `RouteTable` creates a new handle to the same underlying data,
+/// allowing multiple owners to share the same routes.
+#[derive(Debug, Clone, Default)]
 pub struct RouteTable {
-    inner: RwLock<RouteTableInner>,
+    inner: Arc<RwLock<RouteTableInner>>,
 }
 
 #[derive(Debug, Default)]
@@ -48,7 +52,9 @@ struct RouteTableInner {
 impl RouteTable {
     /// Creates a new empty route table.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            inner: Arc::new(RwLock::new(RouteTableInner::default())),
+        }
     }
 
     /// Adds a next hop for a destination in a VNI.

@@ -41,7 +41,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::time::Instant;
 
 use crate::route::RouteTable;
@@ -71,8 +71,10 @@ impl Default for ServerConfig {
 pub struct MetalBondServer {
     /// Server state shared between all peer handlers.
     state: Arc<ServerState>,
-    /// Shutdown signal sender.
+    /// Shutdown signal sender for accept loop.
     shutdown_tx: mpsc::Sender<()>,
+    /// Shutdown broadcast sender for peer handlers.
+    peer_shutdown_tx: broadcast::Sender<()>,
     /// Server task handle.
     _task: tokio::task::JoinHandle<()>,
 }
@@ -135,8 +137,10 @@ impl MetalBondServer {
         });
 
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        let (peer_shutdown_tx, _) = broadcast::channel::<()>(1);
 
         let task_state = state.clone();
+        let task_peer_shutdown = peer_shutdown_tx.clone();
         let task = tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -145,8 +149,9 @@ impl MetalBondServer {
                             Ok((stream, addr)) => {
                                 tracing::info!(peer = %addr, "new connection");
                                 let peer_state = task_state.clone();
+                                let mut peer_shutdown_rx = task_peer_shutdown.subscribe();
                                 tokio::spawn(async move {
-                                    if let Err(e) = handle_peer(stream, addr, peer_state).await {
+                                    if let Err(e) = handle_peer(stream, addr, peer_state, &mut peer_shutdown_rx).await {
                                         tracing::warn!(peer = %addr, error = %e, "peer error");
                                     }
                                 });
@@ -167,6 +172,7 @@ impl MetalBondServer {
         Ok(Self {
             state,
             shutdown_tx,
+            peer_shutdown_tx,
             _task: task,
         })
     }
@@ -186,8 +192,11 @@ impl MetalBondServer {
         self.state.routes.len()
     }
 
-    /// Shuts down the server.
+    /// Shuts down the server and closes all peer connections.
     pub async fn shutdown(self) -> Result<()> {
+        // Signal all peer handlers to shutdown
+        let _ = self.peer_shutdown_tx.send(());
+        // Signal the accept loop to stop
         let _ = self.shutdown_tx.send(()).await;
         Ok(())
     }
@@ -198,6 +207,7 @@ async fn handle_peer(
     mut stream: TcpStream,
     addr: SocketAddr,
     state: Arc<ServerState>,
+    shutdown_rx: &mut broadcast::Receiver<()>,
 ) -> Result<()> {
     let keepalive_interval = state.config.keepalive_interval;
 
@@ -254,6 +264,12 @@ async fn handle_peer(
 
     let result: Result<()> = 'outer: loop {
         tokio::select! {
+            // Server shutdown signal
+            _ = shutdown_rx.recv() => {
+                tracing::info!(peer = %addr, "server shutdown, closing connection");
+                break Ok(());
+            }
+
             // Check for timeout
             _ = tokio::time::sleep(keepalive_timeout) => {
                 if last_received.elapsed() > keepalive_timeout {

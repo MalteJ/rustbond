@@ -595,7 +595,7 @@ async fn test_multi_server_connects_all() {
     assert!(result.unwrap().is_ok());
 
     // Verify state
-    let state = client.state().await;
+    let state = client.state();
     assert!(
         matches!(state, ClientState::FullyConnected),
         "State should be FullyConnected, got {:?}",
@@ -900,4 +900,67 @@ async fn test_multi_server_subscribe_announce_to_all() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     server1.shutdown().await.unwrap();
     server2.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_routes_reannounced_on_reconnect() {
+    // Start initial server
+    let config = ServerConfig::default();
+    let server = MetalBondServer::start("[::1]:14815", config.clone()).await.unwrap();
+
+    // Create client that will announce a route
+    let handler = Arc::new(CountingHandler::new());
+    let client = MetalBondClient::connect(&["[::1]:14815"], handler.clone());
+    client.wait_established().await.unwrap();
+    client.subscribe(Vni(100)).await.unwrap();
+
+    // Announce a route
+    let destination = dest("10.99.0.0/24");
+    let next_hop = hop("2001:db8::99");
+    client
+        .announce(Vni(100), destination.clone(), next_hop.clone())
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Verify server has the route
+    assert_eq!(server.route_count(), 1, "Server should have the route");
+
+    // Shutdown the server - client will disconnect
+    server.shutdown().await.unwrap();
+
+    // Wait for client to detect disconnect
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // Start a new server on the same port
+    let new_server = MetalBondServer::start("[::1]:14815", config).await.unwrap();
+
+    // Wait for client to reconnect (retry interval is 5-10 seconds)
+    let reconnected = timeout(Duration::from_secs(15), async {
+        loop {
+            if new_server.peer_count().await > 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+
+    assert!(reconnected.is_ok(), "Client should reconnect to new server");
+
+    // Wait a bit for route re-announcement to complete
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Verify the route was re-announced to the new server
+    assert_eq!(
+        new_server.route_count(),
+        1,
+        "Route should be re-announced after reconnection"
+    );
+
+    // Cleanup
+    drop(client);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    new_server.shutdown().await.unwrap();
 }
