@@ -48,8 +48,6 @@ pub struct PeerState {
     state_rx: watch::Receiver<ConnectionState>,
     /// Subscribed VNIs.
     pub subscriptions: RwLock<HashSet<Vni>>,
-    /// Routes received from the server.
-    pub received_routes: RouteTable,
 }
 
 impl PeerState {
@@ -59,7 +57,6 @@ impl PeerState {
             state_tx,
             state_rx,
             subscriptions: RwLock::new(HashSet::new()),
-            received_routes: RouteTable::new(),
         }
     }
 
@@ -96,7 +93,7 @@ impl Peer {
     pub fn new<H: RouteHandler>(
         remote_addr: String,
         handler: Arc<H>,
-        announced_routes: RouteTable,
+        announced_routes: Arc<RwLock<RouteTable>>,
     ) -> (Self, tokio::task::JoinHandle<()>) {
         let state = Arc::new(PeerState::new());
         let (cmd_tx, cmd_rx) = mpsc::channel(256);
@@ -164,8 +161,11 @@ async fn peer_task<H: RouteHandler>(
     state: Arc<PeerState>,
     mut cmd_rx: mpsc::Receiver<PeerCommand>,
     handler: Arc<H>,
-    announced_routes: RouteTable,
+    announced_routes: Arc<RwLock<RouteTable>>,
 ) {
+    // Routes received from the server - local to this task, no lock needed
+    let mut received_routes = RouteTable::new();
+
     loop {
         // Try to connect
         state.set_state(ConnectionState::Connecting);
@@ -198,7 +198,16 @@ async fn peer_task<H: RouteHandler>(
         };
 
         // Run the connection
-        if let Err(e) = run_connection(stream, &state, &mut cmd_rx, &handler, &announced_routes).await {
+        if let Err(e) = run_connection(
+            stream,
+            &state,
+            &mut cmd_rx,
+            &handler,
+            &announced_routes,
+            &mut received_routes,
+        )
+        .await
+        {
             tracing::warn!(addr = %remote_addr, error = %e, "connection error");
         }
 
@@ -209,10 +218,10 @@ async fn peer_task<H: RouteHandler>(
         }
 
         // Clear received routes on disconnect
-        for (vni, route) in state.received_routes.get_all_routes() {
+        for (vni, route) in received_routes.get_all_routes() {
             handler.remove_route(vni, route);
         }
-        state.received_routes.clear();
+        received_routes.clear();
 
         // Retry
         state.set_state(ConnectionState::Retry);
@@ -240,7 +249,8 @@ async fn run_connection<H: RouteHandler>(
     state: &Arc<PeerState>,
     cmd_rx: &mut mpsc::Receiver<PeerCommand>,
     handler: &Arc<H>,
-    announced_routes: &RouteTable,
+    announced_routes: &Arc<RwLock<RouteTable>>,
+    received_routes: &mut RouteTable,
 ) -> Result<()> {
     let keepalive_interval = DEFAULT_KEEPALIVE_INTERVAL;
 
@@ -288,7 +298,8 @@ async fn run_connection<H: RouteHandler>(
         }
     }
     {
-        for (vni, route) in announced_routes.get_all_routes() {
+        let routes = announced_routes.read().await;
+        for (vni, route) in routes.get_all_routes() {
             let msg = Message::Update {
                 action: Action::Add,
                 vni,
@@ -337,7 +348,7 @@ async fn run_connection<H: RouteHandler>(
                     match Message::decode(&msg_buf) {
                         Ok((msg, consumed)) => {
                             msg_buf.drain(..consumed);
-                            handle_message(msg, state, handler).await?;
+                            handle_message(msg, received_routes, handler).await?;
                         }
                         Err(Error::Protocol(ref e)) if e.contains("too short") || e.contains("truncated") => {
                             // Need more data
@@ -363,7 +374,7 @@ async fn run_connection<H: RouteHandler>(
                         state.subscriptions.write().await.remove(&vni);
 
                         // Remove received routes for this VNI
-                        for route in state.received_routes.remove_vni(vni) {
+                        for route in received_routes.remove_vni(vni) {
                             handler.remove_route(vni, route);
                         }
                         tracing::debug!(%vni, "unsubscribed from VNI");
@@ -427,7 +438,7 @@ async fn receive_message_with_timeout(
 /// Handles a received message.
 async fn handle_message<H: RouteHandler>(
     msg: Message,
-    state: &Arc<PeerState>,
+    received_routes: &mut RouteTable,
     handler: &Arc<H>,
 ) -> Result<()> {
     match msg {
@@ -453,15 +464,13 @@ async fn handle_message<H: RouteHandler>(
             let route = Route::new(destination.clone(), next_hop.clone());
             match action {
                 Action::Add => {
-                    if state.received_routes.add_next_hop(vni, destination, next_hop) {
+                    if received_routes.add_next_hop(vni, destination, next_hop) {
                         tracing::debug!(%vni, %route, "received route ADD");
                         handler.add_route(vni, route);
                     }
                 }
                 Action::Remove => {
-                    let (removed, _) = state
-                        .received_routes
-                        .remove_next_hop(vni, &destination, &next_hop);
+                    let (removed, _) = received_routes.remove_next_hop(vni, &destination, &next_hop);
                     if removed {
                         tracing::debug!(%vni, %route, "received route REMOVE");
                         handler.remove_route(vni, route);

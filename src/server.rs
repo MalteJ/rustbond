@@ -3,6 +3,13 @@
 //! The server accepts connections from clients, manages subscriptions,
 //! and distributes routes between subscribers.
 //!
+//! ## Architecture
+//!
+//! The server uses an actor model for routing state management:
+//! - A single `RoutingActor` owns all routing state (no locks needed)
+//! - Peer handlers send commands to the actor via a channel
+//! - The actor processes commands sequentially and distributes updates
+//!
 //! ## Features
 //!
 //! - **VNI-based routing**: Routes are organized by Virtual Network Identifier
@@ -41,7 +48,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
 use tokio::time::Instant;
 
 use crate::route::RouteTable;
@@ -51,6 +58,11 @@ use crate::{Error, Result, Route};
 
 /// Default keepalive interval in seconds.
 const DEFAULT_KEEPALIVE_INTERVAL: u32 = 5;
+
+/// Maximum pending messages per peer (slow consumer protection).
+/// Large enough to handle bursts, but bounded to prevent OOM.
+const MAX_PENDING_MESSAGES: usize = 50_000;
+
 
 /// Server configuration.
 #[derive(Debug, Clone)]
@@ -71,36 +83,297 @@ impl Default for ServerConfig {
 pub struct MetalBondServer {
     /// Server state shared between all peer handlers.
     state: Arc<ServerState>,
+    /// Handle to send commands to the routing actor.
+    routing: RoutingHandle,
     /// Shutdown signal sender for accept loop.
     shutdown_tx: mpsc::Sender<()>,
     /// Shutdown broadcast sender for peer handlers.
     peer_shutdown_tx: broadcast::Sender<()>,
     /// Server task handle.
     _task: tokio::task::JoinHandle<()>,
+    /// Routing actor task handle.
+    _routing_task: tokio::task::JoinHandle<()>,
 }
 
 /// Shared server state.
+///
+/// Note: Routing state is owned by the RoutingActor, not stored here.
 pub struct ServerState {
     /// Server configuration.
     pub config: ServerConfig,
-    /// All routes received from clients.
-    /// Maps VNI -> Destination -> NextHop -> PeerAddr
-    pub routes: RouteTable,
-    /// Route ownership: tracks which peer announced each route.
-    pub route_owners: RwLock<HashMap<(Vni, Destination, NextHop), SocketAddr>>,
-    /// Subscriptions: VNI -> Set of peer addresses.
-    pub subscriptions: RwLock<HashMap<Vni, HashSet<SocketAddr>>>,
-    /// Connected peers.
+    /// Handle to send commands to the routing actor.
+    routing: RoutingHandle,
+    /// Connected peers (for keepalive tracking, not distribution).
     pub peers: RwLock<HashMap<SocketAddr, PeerHandle>>,
 }
 
 /// Handle to communicate with a connected peer.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PeerHandle {
     /// Sender to send messages to this peer.
     pub tx: mpsc::Sender<Message>,
     /// Peer's connection state.
     pub state: ConnectionState,
+}
+
+// ============================================================================
+// Routing Actor
+// ============================================================================
+
+/// Commands sent to the routing actor.
+enum RoutingCommand {
+    /// Register a new peer connection.
+    PeerConnected {
+        addr: SocketAddr,
+        tx: mpsc::Sender<Message>,
+    },
+    /// Peer disconnected - clean up routes and subscriptions.
+    PeerDisconnected {
+        addr: SocketAddr,
+    },
+    /// Subscribe to a VNI (returns existing routes).
+    Subscribe {
+        addr: SocketAddr,
+        vni: Vni,
+        response_tx: oneshot::Sender<Vec<(Destination, NextHop)>>,
+    },
+    /// Unsubscribe from a VNI.
+    Unsubscribe {
+        addr: SocketAddr,
+        vni: Vni,
+    },
+    /// Route update (add or remove).
+    Update {
+        from_addr: SocketAddr,
+        action: Action,
+        vni: Vni,
+        destination: Destination,
+        next_hop: NextHop,
+    },
+    /// Get statistics.
+    GetStats {
+        response_tx: oneshot::Sender<(usize, usize, usize)>,
+    },
+}
+
+/// Actor that owns all routing state.
+///
+/// Processes commands sequentially - no locks needed.
+struct RoutingActor {
+    /// Route table: VNI -> Destination -> Set<NextHop>
+    routes: RouteTable,
+    /// Route ownership: which peer announced each route
+    route_owners: HashMap<(Vni, Destination, NextHop), SocketAddr>,
+    /// Subscriptions: VNI -> Set of subscribed peer addresses
+    subscriptions: HashMap<Vni, HashSet<SocketAddr>>,
+    /// Peer channels for distribution (bounded for slow consumer protection)
+    peers: HashMap<SocketAddr, mpsc::Sender<Message>>,
+    /// Command receiver
+    cmd_rx: mpsc::Receiver<RoutingCommand>,
+}
+
+impl RoutingActor {
+    fn new(cmd_rx: mpsc::Receiver<RoutingCommand>) -> Self {
+        Self {
+            routes: RouteTable::new(),
+            route_owners: HashMap::new(),
+            subscriptions: HashMap::new(),
+            peers: HashMap::new(),
+            cmd_rx,
+        }
+    }
+
+    async fn run(mut self) {
+        while let Some(cmd) = self.cmd_rx.recv().await {
+            match cmd {
+                RoutingCommand::PeerConnected { addr, tx } => {
+                    self.peers.insert(addr, tx);
+                    tracing::debug!(peer = %addr, "peer registered with routing actor");
+                }
+                RoutingCommand::PeerDisconnected { addr } => {
+                    self.handle_peer_disconnected(addr);
+                }
+                RoutingCommand::Subscribe { addr, vni, response_tx } => {
+                    let routes = self.handle_subscribe(addr, vni);
+                    let _ = response_tx.send(routes);
+                }
+                RoutingCommand::Unsubscribe { addr, vni } => {
+                    self.handle_unsubscribe(addr, vni);
+                }
+                RoutingCommand::Update { from_addr, action, vni, destination, next_hop } => {
+                    self.handle_update(from_addr, action, vni, destination, next_hop);
+                }
+                RoutingCommand::GetStats { response_tx } => {
+                    let stats = (
+                        self.routes.len(),
+                        self.route_owners.len(),
+                        self.peers.len(),
+                    );
+                    let _ = response_tx.send(stats);
+                }
+            }
+        }
+        tracing::debug!("routing actor shutting down");
+    }
+
+    fn handle_subscribe(&mut self, addr: SocketAddr, vni: Vni) -> Vec<(Destination, NextHop)> {
+        self.subscriptions.entry(vni).or_default().insert(addr);
+        tracing::info!(peer = %addr, %vni, "subscribed");
+
+        // Collect existing routes for this VNI
+        self.routes.get_destinations_by_vni(vni)
+            .into_iter()
+            .flat_map(|(dest, hops)| {
+                hops.into_iter().map(move |hop| (dest.clone(), hop))
+            })
+            .collect()
+    }
+
+    fn handle_unsubscribe(&mut self, addr: SocketAddr, vni: Vni) {
+        if let Some(peers) = self.subscriptions.get_mut(&vni) {
+            peers.remove(&addr);
+            if peers.is_empty() {
+                self.subscriptions.remove(&vni);
+            }
+        }
+        tracing::info!(peer = %addr, %vni, "unsubscribed");
+    }
+
+    fn handle_update(
+        &mut self,
+        from_addr: SocketAddr,
+        action: Action,
+        vni: Vni,
+        destination: Destination,
+        next_hop: NextHop,
+    ) {
+        let route = Route::new(destination.clone(), next_hop.clone());
+
+        match action {
+            Action::Add => {
+                tracing::debug!(
+                    peer = %from_addr,
+                    %vni,
+                    %route,
+                    hop_type = %next_hop.hop_type,
+                    "route ADD"
+                );
+                self.routes.add_next_hop(vni, destination.clone(), next_hop.clone());
+                self.route_owners.insert((vni, destination.clone(), next_hop.clone()), from_addr);
+            }
+            Action::Remove => {
+                tracing::debug!(
+                    peer = %from_addr,
+                    %vni,
+                    %route,
+                    hop_type = %next_hop.hop_type,
+                    "route REMOVE"
+                );
+                self.routes.remove_next_hop(vni, &destination, &next_hop);
+                self.route_owners.remove(&(vni, destination.clone(), next_hop.clone()));
+            }
+        }
+
+        // Distribute to subscribers (excluding sender)
+        let msg = Message::Update {
+            action,
+            vni,
+            destination: route.destination,
+            next_hop: route.next_hop,
+        };
+
+        let mut slow_consumers = Vec::new();
+
+        if let Some(subs) = self.subscriptions.get(&vni) {
+            for &addr in subs {
+                if addr != from_addr {
+                    if let Some(tx) = self.peers.get(&addr) {
+                        // try_send is non-blocking; Full means 50k messages backed up = slow consumer
+                        if let Err(mpsc::error::TrySendError::Full(_)) = tx.try_send(msg.clone()) {
+                            tracing::warn!(
+                                peer = %addr,
+                                "slow consumer detected (50k messages backed up), disconnecting"
+                            );
+                            slow_consumers.push(addr);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Remove slow consumers - they'll reconnect and get full sync
+        for addr in slow_consumers {
+            self.peers.remove(&addr);
+            for subs in self.subscriptions.values_mut() {
+                subs.remove(&addr);
+            }
+        }
+    }
+
+    fn handle_peer_disconnected(&mut self, addr: SocketAddr) {
+        tracing::info!(peer = %addr, "cleaning up peer");
+
+        // Remove peer channel
+        self.peers.remove(&addr);
+
+        // Remove from all subscriptions
+        for peers in self.subscriptions.values_mut() {
+            peers.remove(&addr);
+        }
+        self.subscriptions.retain(|_, peers| !peers.is_empty());
+
+        // Collect and remove owned routes, along with their subscribers
+        let owned_routes: Vec<_> = self.route_owners
+            .iter()
+            .filter(|(_, &owner)| owner == addr)
+            .map(|((vni, dest, hop), _)| (*vni, dest.clone(), hop.clone()))
+            .collect();
+
+        let mut slow_consumers = Vec::new();
+
+        for (vni, destination, next_hop) in owned_routes {
+            self.routes.remove_next_hop(vni, &destination, &next_hop);
+            self.route_owners.remove(&(vni, destination.clone(), next_hop.clone()));
+
+            // Distribute remove to subscribers
+            let msg = Message::Update {
+                action: Action::Remove,
+                vni,
+                destination,
+                next_hop,
+            };
+
+            if let Some(subs) = self.subscriptions.get(&vni) {
+                for sub_addr in subs {
+                    if let Some(tx) = self.peers.get(sub_addr) {
+                        if let Err(mpsc::error::TrySendError::Full(_)) = tx.try_send(msg.clone()) {
+                            if !slow_consumers.contains(sub_addr) {
+                                tracing::warn!(
+                                    peer = %sub_addr,
+                                    "slow consumer detected (50k messages backed up), disconnecting"
+                                );
+                                slow_consumers.push(*sub_addr);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Remove slow consumers
+        for addr in slow_consumers {
+            self.peers.remove(&addr);
+            for subs in self.subscriptions.values_mut() {
+                subs.remove(&addr);
+            }
+        }
+    }
+}
+
+/// Handle for sending commands to the routing actor.
+#[derive(Clone)]
+struct RoutingHandle {
+    tx: mpsc::Sender<RoutingCommand>,
 }
 
 impl MetalBondServer {
@@ -128,11 +401,15 @@ impl MetalBondServer {
         let local_addr = listener.local_addr()?;
         tracing::info!(addr = %local_addr, "MetalBond server listening");
 
+        // Create routing actor with large command buffer
+        let (routing_tx, routing_rx) = mpsc::channel::<RoutingCommand>(8192);
+        let routing_handle = RoutingHandle { tx: routing_tx };
+        let routing_actor = RoutingActor::new(routing_rx);
+        let routing_task = tokio::spawn(routing_actor.run());
+
         let state = Arc::new(ServerState {
             config,
-            routes: RouteTable::new(),
-            route_owners: RwLock::new(HashMap::new()),
-            subscriptions: RwLock::new(HashMap::new()),
+            routing: routing_handle.clone(),
             peers: RwLock::new(HashMap::new()),
         });
 
@@ -171,9 +448,11 @@ impl MetalBondServer {
 
         Ok(Self {
             state,
+            routing: routing_handle,
             shutdown_tx,
             peer_shutdown_tx,
             _task: task,
+            _routing_task: routing_task,
         })
     }
 
@@ -188,8 +467,20 @@ impl MetalBondServer {
     }
 
     /// Returns the number of routes in the server.
-    pub fn route_count(&self) -> usize {
-        self.state.routes.len()
+    pub async fn route_count(&self) -> usize {
+        let (routes, _) = self.route_stats().await;
+        routes
+    }
+
+    /// Returns detailed route statistics for debugging.
+    /// Returns (routes_count, owners_count).
+    pub async fn route_stats(&self) -> (usize, usize) {
+        let (response_tx, response_rx) = oneshot::channel();
+        let _ = self.routing.tx.send(RoutingCommand::GetStats { response_tx }).await;
+        match response_rx.await {
+            Ok((routes, owners, _peers)) => (routes, owners),
+            Err(_) => (0, 0),
+        }
     }
 
     /// Shuts down the server and closes all peer connections.
@@ -242,10 +533,17 @@ async fn handle_peer(
     send_message(&mut stream, &Message::Keepalive).await?;
     tracing::info!(peer = %addr, "connection established");
 
-    // Create channel for sending messages to this peer
-    let (tx, mut rx) = mpsc::channel::<Message>(256);
+    // Create bounded channel for sending messages to this peer
+    // Large capacity to handle bursts, bounded to prevent OOM
+    let (tx, mut rx) = mpsc::channel::<Message>(MAX_PENDING_MESSAGES);
 
-    // Register peer
+    // Register peer with routing actor (for distribution)
+    let _ = state.routing.tx.send(RoutingCommand::PeerConnected {
+        addr,
+        tx: tx.clone(),
+    }).await;
+
+    // Also register in peers map (for keepalive tracking)
     {
         let mut peers = state.peers.write().await;
         peers.insert(
@@ -309,17 +607,44 @@ async fn handle_peer(
                 }
             }
 
-            // Outgoing messages to peer
+            // Outgoing messages to peer - batched for efficiency
             Some(msg) = rx.recv() => {
-                if let Err(e) = send_message(&mut stream, &msg).await {
-                    break Err(e);
+                // Collect all available messages into a batch
+                let mut batch = Vec::with_capacity(256);
+                batch.push(msg);
+
+                // Drain pending messages up to batch limit
+                while batch.len() < 1000 {
+                    match rx.try_recv() {
+                        Ok(m) => batch.push(m),
+                        Err(_) => break,
+                    }
+                }
+
+                // Encode all messages into a single buffer
+                let mut data = Vec::with_capacity(batch.len() * 64);
+                for m in &batch {
+                    if let Ok(encoded) = m.encode() {
+                        data.extend_from_slice(&encoded);
+                    }
+                }
+
+                // Single write for the entire batch
+                if let Err(e) = stream.write_all(&data).await {
+                    break Err(e.into());
                 }
             }
         }
     };
 
-    // Cleanup: remove peer and withdraw its routes
-    cleanup_peer(addr, &state).await;
+    // Cleanup: remove from peers map
+    {
+        let mut peers = state.peers.write().await;
+        peers.remove(&addr);
+    }
+
+    // Notify routing actor to cleanup routes and subscriptions
+    let _ = state.routing.tx.send(RoutingCommand::PeerDisconnected { addr }).await;
 
     result
 }
@@ -367,25 +692,26 @@ async fn handle_subscribe(
     vni: Vni,
     state: &Arc<ServerState>,
 ) -> Result<()> {
-    // Add to subscriptions
-    {
-        let mut subs = state.subscriptions.write().await;
-        subs.entry(vni).or_default().insert(addr);
-    }
-    tracing::info!(peer = %addr, %vni, "subscribed");
+    // Send subscribe command to actor and get existing routes
+    let (response_tx, response_rx) = oneshot::channel();
+    let _ = state.routing.tx.send(RoutingCommand::Subscribe {
+        addr,
+        vni,
+        response_tx,
+    }).await;
+
+    // Wait for routes from actor
+    let routes = response_rx.await.unwrap_or_default();
 
     // Send existing routes for this VNI
-    let routes = state.routes.get_destinations_by_vni(vni);
-    for (dest, next_hops) in routes {
-        for next_hop in next_hops {
-            let msg = Message::Update {
-                action: Action::Add,
-                vni,
-                destination: dest.clone(),
-                next_hop,
-            };
-            send_message(stream, &msg).await?;
-        }
+    for (dest, next_hop) in routes {
+        let msg = Message::Update {
+            action: Action::Add,
+            vni,
+            destination: dest,
+            next_hop,
+        };
+        send_message(stream, &msg).await?;
     }
 
     Ok(())
@@ -397,14 +723,7 @@ async fn handle_unsubscribe(
     vni: Vni,
     state: &Arc<ServerState>,
 ) -> Result<()> {
-    let mut subs = state.subscriptions.write().await;
-    if let Some(peers) = subs.get_mut(&vni) {
-        peers.remove(&addr);
-        if peers.is_empty() {
-            subs.remove(&vni);
-        }
-    }
-    tracing::info!(peer = %addr, %vni, "unsubscribed");
+    let _ = state.routing.tx.send(RoutingCommand::Unsubscribe { addr, vni }).await;
     Ok(())
 }
 
@@ -417,145 +736,16 @@ async fn handle_update(
     next_hop: NextHop,
     state: &Arc<ServerState>,
 ) -> Result<()> {
-    let route = Route::new(destination.clone(), next_hop.clone());
-
-    match action {
-        Action::Add => {
-            tracing::info!(
-                peer = %from_addr,
-                %vni,
-                %route,
-                hop_type = %next_hop.hop_type,
-                "received route ADD"
-            );
-
-            // Add to route table
-            state.routes.add_next_hop(vni, destination.clone(), next_hop.clone());
-
-            // Track ownership
-            {
-                let mut owners = state.route_owners.write().await;
-                owners.insert((vni, destination.clone(), next_hop.clone()), from_addr);
-            }
-
-            // Distribute to subscribers
-            distribute_route(from_addr, Action::Add, vni, destination, next_hop, state).await?;
-        }
-        Action::Remove => {
-            tracing::info!(
-                peer = %from_addr,
-                %vni,
-                %route,
-                hop_type = %next_hop.hop_type,
-                "received route REMOVE"
-            );
-
-            // Remove from route table
-            state.routes.remove_next_hop(vni, &destination, &next_hop);
-
-            // Remove ownership
-            {
-                let mut owners = state.route_owners.write().await;
-                owners.remove(&(vni, destination.clone(), next_hop.clone()));
-            }
-
-            // Distribute withdrawal to subscribers
-            distribute_route(from_addr, Action::Remove, vni, destination, next_hop, state).await?;
-        }
-    }
-
-    Ok(())
-}
-
-/// Distribute a route update to all subscribers of the VNI.
-async fn distribute_route(
-    from_addr: SocketAddr,
-    action: Action,
-    vni: Vni,
-    destination: Destination,
-    next_hop: NextHop,
-    state: &Arc<ServerState>,
-) -> Result<()> {
-    let msg = Message::Update {
+    // Send update command to actor (blocking to ensure delivery)
+    // Actor handles state update and distribution
+    let _ = state.routing.tx.send(RoutingCommand::Update {
+        from_addr,
         action,
         vni,
         destination,
-        next_hop: next_hop.clone(),
-    };
-
-    let subs = state.subscriptions.read().await;
-    let peers = state.peers.read().await;
-
-    if let Some(subscribers) = subs.get(&vni) {
-        for &peer_addr in subscribers {
-            // Don't send routes back to the peer that announced them
-            if peer_addr == from_addr {
-                continue;
-            }
-
-            if let Some(peer) = peers.get(&peer_addr) {
-                if let Err(e) = peer.tx.try_send(msg.clone()) {
-                    tracing::warn!(peer = %peer_addr, error = %e, "failed to send update");
-                }
-            }
-        }
-    }
-
+        next_hop,
+    }).await;
     Ok(())
-}
-
-/// Clean up when a peer disconnects.
-async fn cleanup_peer(addr: SocketAddr, state: &Arc<ServerState>) {
-    tracing::info!(peer = %addr, "cleaning up peer");
-
-    // Remove from peers
-    {
-        let mut peers = state.peers.write().await;
-        peers.remove(&addr);
-    }
-
-    // Remove from all subscriptions
-    {
-        let mut subs = state.subscriptions.write().await;
-        for (_, peers) in subs.iter_mut() {
-            peers.remove(&addr);
-        }
-        subs.retain(|_, peers| !peers.is_empty());
-    }
-
-    // Withdraw all routes announced by this peer
-    let routes_to_remove: Vec<_> = {
-        let owners = state.route_owners.read().await;
-        owners
-            .iter()
-            .filter(|(_, &owner)| owner == addr)
-            .map(|((vni, dest, hop), _)| (*vni, dest.clone(), hop.clone()))
-            .collect()
-    };
-
-    for (vni, destination, next_hop) in routes_to_remove {
-        tracing::info!(
-            peer = %addr,
-            %vni,
-            dest = %destination,
-            hop = %next_hop,
-            "withdrawing route"
-        );
-
-        // Remove from route table
-        state.routes.remove_next_hop(vni, &destination, &next_hop);
-
-        // Remove ownership
-        {
-            let mut owners = state.route_owners.write().await;
-            owners.remove(&(vni, destination.clone(), next_hop.clone()));
-        }
-
-        // Notify subscribers
-        if let Err(e) = distribute_route(addr, Action::Remove, vni, destination, next_hop, state).await {
-            tracing::warn!(error = %e, "failed to distribute route withdrawal");
-        }
-    }
 }
 
 /// Send a message over the TCP stream.

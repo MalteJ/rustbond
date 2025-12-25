@@ -78,7 +78,7 @@ async fn test_server_starts_and_stops() {
     let config = ServerConfig::default();
     let server = MetalBondServer::start("[::1]:0", config).await.unwrap();
 
-    assert_eq!(server.route_count(), 0);
+    assert_eq!(server.route_count().await, 0);
     assert_eq!(server.peer_count().await, 0);
 
     server.shutdown().await.unwrap();
@@ -138,7 +138,7 @@ async fn test_client_subscribe_and_announce() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Verify route is in server
-    assert_eq!(server.route_count(), 1);
+    assert_eq!(server.route_count().await, 1);
 
     // Cleanup
     drop(client);
@@ -366,7 +366,7 @@ async fn test_explicit_route_withdrawal() {
 
     // Verify route is removed from server
     tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(server.route_count(), 0);
+    assert_eq!(server.route_count().await, 0);
 
     // Cleanup
     drop(client1);
@@ -892,8 +892,8 @@ async fn test_multi_server_subscribe_announce_to_all() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Both servers should have the route
-    assert_eq!(server1.route_count(), 1, "Server 1 should have the route");
-    assert_eq!(server2.route_count(), 1, "Server 2 should have the route");
+    assert_eq!(server1.route_count().await, 1, "Server 1 should have the route");
+    assert_eq!(server2.route_count().await, 1, "Server 2 should have the route");
 
     // Cleanup
     drop(client);
@@ -925,7 +925,7 @@ async fn test_routes_reannounced_on_reconnect() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Verify server has the route
-    assert_eq!(server.route_count(), 1, "Server should have the route");
+    assert_eq!(server.route_count().await, 1, "Server should have the route");
 
     // Shutdown the server - client will disconnect
     server.shutdown().await.unwrap();
@@ -954,7 +954,7 @@ async fn test_routes_reannounced_on_reconnect() {
 
     // Verify the route was re-announced to the new server
     assert_eq!(
-        new_server.route_count(),
+        new_server.route_count().await,
         1,
         "Route should be re-announced after reconnection"
     );

@@ -61,14 +61,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             interval.tick().await;
             let peer_count = state.peers.read().await.len();
-            let route_count = state.routes.len();
-            let sub_count: usize = state
-                .subscriptions
-                .read()
-                .await
-                .values()
-                .map(|s| s.len())
-                .sum();
+            let routing = state.routing.read().await;
+            let route_count = routing.routes.len();
+            let sub_count: usize = routing.subscriptions.values().map(|s| s.len()).sum();
             println!(
                 "[status] peers: {}, routes: {}, subscriptions: {}",
                 peer_count, route_count, sub_count

@@ -1,9 +1,6 @@
 //! Route and route table types.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-
-use parking_lot::RwLock;
 
 use crate::types::{Destination, NextHop, Vni};
 
@@ -32,19 +29,14 @@ impl std::fmt::Display for Route {
     }
 }
 
-/// A thread-safe, cloneable route table.
+/// A route table without internal synchronization.
 ///
 /// Structure: `VNI -> Destination -> Set<NextHop>`
 ///
-/// Cloning a `RouteTable` creates a new handle to the same underlying data,
-/// allowing multiple owners to share the same routes.
-#[derive(Debug, Clone, Default)]
-pub struct RouteTable {
-    inner: Arc<RwLock<RouteTableInner>>,
-}
-
+/// This is a plain data structure. The caller is responsible for
+/// synchronization (e.g., wrapping in `RwLock` or `Mutex`).
 #[derive(Debug, Default)]
-struct RouteTableInner {
+pub struct RouteTable {
     /// VNI -> Destination -> Set<NextHop>
     routes: HashMap<Vni, HashMap<Destination, HashSet<NextHop>>>,
 }
@@ -52,17 +44,14 @@ struct RouteTableInner {
 impl RouteTable {
     /// Creates a new empty route table.
     pub fn new() -> Self {
-        Self {
-            inner: Arc::new(RwLock::new(RouteTableInner::default())),
-        }
+        Self::default()
     }
 
     /// Adds a next hop for a destination in a VNI.
     ///
     /// Returns true if the next hop was newly added, false if it already existed.
-    pub fn add_next_hop(&self, vni: Vni, destination: Destination, next_hop: NextHop) -> bool {
-        let mut inner = self.inner.write();
-        let vni_routes = inner.routes.entry(vni).or_default();
+    pub fn add_next_hop(&mut self, vni: Vni, destination: Destination, next_hop: NextHop) -> bool {
+        let vni_routes = self.routes.entry(vni).or_default();
         let next_hops = vni_routes.entry(destination).or_default();
         next_hops.insert(next_hop)
     }
@@ -72,14 +61,12 @@ impl RouteTable {
     /// Returns true if the next hop was removed, false if it didn't exist.
     /// Also returns the number of remaining next hops for this destination.
     pub fn remove_next_hop(
-        &self,
+        &mut self,
         vni: Vni,
         destination: &Destination,
         next_hop: &NextHop,
     ) -> (bool, usize) {
-        let mut inner = self.inner.write();
-
-        if let Some(vni_routes) = inner.routes.get_mut(&vni) {
+        if let Some(vni_routes) = self.routes.get_mut(&vni) {
             if let Some(next_hops) = vni_routes.get_mut(destination) {
                 let removed = next_hops.remove(next_hop);
                 let remaining = next_hops.len();
@@ -89,7 +76,7 @@ impl RouteTable {
                     vni_routes.remove(destination);
                 }
                 if vni_routes.is_empty() {
-                    inner.routes.remove(&vni);
+                    self.routes.remove(&vni);
                 }
 
                 return (removed, remaining);
@@ -101,9 +88,7 @@ impl RouteTable {
 
     /// Checks if a next hop exists for a destination in a VNI.
     pub fn next_hop_exists(&self, vni: Vni, destination: &Destination, next_hop: &NextHop) -> bool {
-        let inner = self.inner.read();
-        inner
-            .routes
+        self.routes
             .get(&vni)
             .and_then(|vni_routes| vni_routes.get(destination))
             .map(|next_hops| next_hops.contains(next_hop))
@@ -112,15 +97,12 @@ impl RouteTable {
 
     /// Returns all VNIs in the route table.
     pub fn get_vnis(&self) -> Vec<Vni> {
-        let inner = self.inner.read();
-        inner.routes.keys().copied().collect()
+        self.routes.keys().copied().collect()
     }
 
     /// Returns all destinations and their next hops for a VNI.
     pub fn get_destinations_by_vni(&self, vni: Vni) -> HashMap<Destination, Vec<NextHop>> {
-        let inner = self.inner.read();
-        inner
-            .routes
+        self.routes
             .get(&vni)
             .map(|vni_routes| {
                 vni_routes
@@ -133,10 +115,9 @@ impl RouteTable {
 
     /// Returns all routes for a VNI.
     pub fn get_routes_by_vni(&self, vni: Vni) -> Vec<Route> {
-        let inner = self.inner.read();
         let mut routes = Vec::new();
 
-        if let Some(vni_routes) = inner.routes.get(&vni) {
+        if let Some(vni_routes) = self.routes.get(&vni) {
             for (dest, hops) in vni_routes {
                 for hop in hops {
                     routes.push(Route::new(dest.clone(), hop.clone()));
@@ -149,10 +130,9 @@ impl RouteTable {
 
     /// Returns all routes in the table.
     pub fn get_all_routes(&self) -> Vec<(Vni, Route)> {
-        let inner = self.inner.read();
         let mut routes = Vec::new();
 
-        for (&vni, vni_routes) in &inner.routes {
+        for (&vni, vni_routes) in &self.routes {
             for (dest, hops) in vni_routes {
                 for hop in hops {
                     routes.push((vni, Route::new(dest.clone(), hop.clone())));
@@ -164,11 +144,10 @@ impl RouteTable {
     }
 
     /// Removes all routes for a VNI.
-    pub fn remove_vni(&self, vni: Vni) -> Vec<Route> {
-        let mut inner = self.inner.write();
+    pub fn remove_vni(&mut self, vni: Vni) -> Vec<Route> {
         let mut removed = Vec::new();
 
-        if let Some(vni_routes) = inner.routes.remove(&vni) {
+        if let Some(vni_routes) = self.routes.remove(&vni) {
             for (dest, hops) in vni_routes {
                 for hop in hops {
                     removed.push(Route::new(dest.clone(), hop));
@@ -180,16 +159,13 @@ impl RouteTable {
     }
 
     /// Clears all routes from the table.
-    pub fn clear(&self) {
-        let mut inner = self.inner.write();
-        inner.routes.clear();
+    pub fn clear(&mut self) {
+        self.routes.clear();
     }
 
     /// Returns the total number of routes in the table.
     pub fn len(&self) -> usize {
-        let inner = self.inner.read();
-        inner
-            .routes
+        self.routes
             .values()
             .map(|vni_routes| {
                 vni_routes
@@ -202,7 +178,7 @@ impl RouteTable {
 
     /// Returns true if the table is empty.
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.routes.is_empty()
     }
 }
 
@@ -280,7 +256,7 @@ mod tests {
 
     #[test]
     fn test_add_and_check() {
-        let table = RouteTable::new();
+        let mut table = RouteTable::new();
         let vni = Vni(100);
         let dest = make_dest("10.0.1.0/24");
         let hop = make_hop("2001:db8::1");
@@ -293,7 +269,7 @@ mod tests {
 
     #[test]
     fn test_remove() {
-        let table = RouteTable::new();
+        let mut table = RouteTable::new();
         let vni = Vni(100);
         let dest = make_dest("10.0.1.0/24");
         let hop1 = make_hop("2001:db8::1");
@@ -315,7 +291,7 @@ mod tests {
 
     #[test]
     fn test_remove_nonexistent() {
-        let table = RouteTable::new();
+        let mut table = RouteTable::new();
         let vni = Vni(100);
         let dest = make_dest("10.0.1.0/24");
         let hop = make_hop("2001:db8::1");
@@ -327,7 +303,7 @@ mod tests {
 
     #[test]
     fn test_remove_wrong_vni() {
-        let table = RouteTable::new();
+        let mut table = RouteTable::new();
         let dest = make_dest("10.0.1.0/24");
         let hop = make_hop("2001:db8::1");
 
@@ -340,7 +316,7 @@ mod tests {
 
     #[test]
     fn test_get_routes() {
-        let table = RouteTable::new();
+        let mut table = RouteTable::new();
         let vni = Vni(100);
 
         table.add_next_hop(vni, make_dest("10.0.1.0/24"), make_hop("2001:db8::1"));
@@ -359,7 +335,7 @@ mod tests {
 
     #[test]
     fn test_get_destinations_by_vni() {
-        let table = RouteTable::new();
+        let mut table = RouteTable::new();
         let vni = Vni(100);
         let dest1 = make_dest("10.0.1.0/24");
         let dest2 = make_dest("10.0.2.0/24");
@@ -376,7 +352,7 @@ mod tests {
 
     #[test]
     fn test_get_vnis() {
-        let table = RouteTable::new();
+        let mut table = RouteTable::new();
 
         table.add_next_hop(Vni(100), make_dest("10.0.1.0/24"), make_hop("2001:db8::1"));
         table.add_next_hop(Vni(200), make_dest("10.0.2.0/24"), make_hop("2001:db8::2"));
@@ -390,7 +366,7 @@ mod tests {
 
     #[test]
     fn test_get_all_routes() {
-        let table = RouteTable::new();
+        let mut table = RouteTable::new();
 
         table.add_next_hop(Vni(100), make_dest("10.0.1.0/24"), make_hop("2001:db8::1"));
         table.add_next_hop(Vni(200), make_dest("10.0.2.0/24"), make_hop("2001:db8::2"));
@@ -401,7 +377,7 @@ mod tests {
 
     #[test]
     fn test_remove_vni() {
-        let table = RouteTable::new();
+        let mut table = RouteTable::new();
 
         table.add_next_hop(Vni(100), make_dest("10.0.1.0/24"), make_hop("2001:db8::1"));
         table.add_next_hop(Vni(100), make_dest("10.0.2.0/24"), make_hop("2001:db8::2"));
@@ -416,7 +392,7 @@ mod tests {
 
     #[test]
     fn test_remove_vni_nonexistent() {
-        let table = RouteTable::new();
+        let mut table = RouteTable::new();
         table.add_next_hop(Vni(100), make_dest("10.0.1.0/24"), make_hop("2001:db8::1"));
 
         let removed = table.remove_vni(Vni(200));
@@ -426,7 +402,7 @@ mod tests {
 
     #[test]
     fn test_clear() {
-        let table = RouteTable::new();
+        let mut table = RouteTable::new();
 
         table.add_next_hop(Vni(100), make_dest("10.0.1.0/24"), make_hop("2001:db8::1"));
         table.add_next_hop(Vni(200), make_dest("10.0.2.0/24"), make_hop("2001:db8::2"));
@@ -439,7 +415,7 @@ mod tests {
 
     #[test]
     fn test_len() {
-        let table = RouteTable::new();
+        let mut table = RouteTable::new();
         assert_eq!(table.len(), 0);
 
         table.add_next_hop(Vni(100), make_dest("10.0.1.0/24"), make_hop("2001:db8::1"));
@@ -460,7 +436,7 @@ mod tests {
 
     #[test]
     fn test_multiple_next_hops_per_destination() {
-        let table = RouteTable::new();
+        let mut table = RouteTable::new();
         let vni = Vni(100);
         let dest = make_dest("10.0.1.0/24");
 
@@ -476,80 +452,8 @@ mod tests {
     }
 
     #[test]
-    fn test_thread_safety() {
-        use std::sync::Arc;
-        use std::thread;
-
-        let table = Arc::new(RouteTable::new());
-        let mut handles = vec![];
-
-        // Spawn multiple threads adding routes
-        for i in 0..10 {
-            let table_clone = Arc::clone(&table);
-            let handle = thread::spawn(move || {
-                let dest = make_dest(&format!("10.0.{}.0/24", i));
-                let hop = make_hop(&format!("2001:db8::{:x}", i));
-                table_clone.add_next_hop(Vni(100), dest, hop);
-            });
-            handles.push(handle);
-        }
-
-        for handle in handles {
-            handle.join().unwrap();
-        }
-
-        assert_eq!(table.len(), 10);
-    }
-
-    #[test]
-    fn test_concurrent_read_write() {
-        use std::sync::Arc;
-        use std::thread;
-
-        let table = Arc::new(RouteTable::new());
-
-        // Add some initial routes
-        for i in 0..5 {
-            let dest = make_dest(&format!("10.0.{}.0/24", i));
-            let hop = make_hop(&format!("2001:db8::{:x}", i));
-            table.add_next_hop(Vni(100), dest, hop);
-        }
-
-        let mut handles = vec![];
-
-        // Readers
-        for _ in 0..5 {
-            let table_clone = Arc::clone(&table);
-            let handle = thread::spawn(move || {
-                for _ in 0..100 {
-                    let _ = table_clone.get_routes_by_vni(Vni(100));
-                    let _ = table_clone.len();
-                }
-            });
-            handles.push(handle);
-        }
-
-        // Writers
-        for i in 5..10 {
-            let table_clone = Arc::clone(&table);
-            let handle = thread::spawn(move || {
-                let dest = make_dest(&format!("10.0.{}.0/24", i));
-                let hop = make_hop(&format!("2001:db8::{:x}", i));
-                table_clone.add_next_hop(Vni(100), dest, hop);
-            });
-            handles.push(handle);
-        }
-
-        for handle in handles {
-            handle.join().unwrap();
-        }
-
-        assert_eq!(table.len(), 10);
-    }
-
-    #[test]
     fn test_cleanup_on_removal() {
-        let table = RouteTable::new();
+        let mut table = RouteTable::new();
         let vni = Vni(100);
         let dest = make_dest("10.0.1.0/24");
         let hop = make_hop("2001:db8::1");
@@ -566,7 +470,7 @@ mod tests {
 
     #[test]
     fn test_next_hop_exists_different_vni() {
-        let table = RouteTable::new();
+        let mut table = RouteTable::new();
         let dest = make_dest("10.0.1.0/24");
         let hop = make_hop("2001:db8::1");
 
@@ -578,7 +482,7 @@ mod tests {
 
     #[test]
     fn test_next_hop_exists_different_dest() {
-        let table = RouteTable::new();
+        let mut table = RouteTable::new();
         let dest1 = make_dest("10.0.1.0/24");
         let dest2 = make_dest("10.0.2.0/24");
         let hop = make_hop("2001:db8::1");
@@ -591,7 +495,7 @@ mod tests {
 
     #[test]
     fn test_next_hop_exists_different_hop() {
-        let table = RouteTable::new();
+        let mut table = RouteTable::new();
         let dest = make_dest("10.0.1.0/24");
         let hop1 = make_hop("2001:db8::1");
         let hop2 = make_hop("2001:db8::2");

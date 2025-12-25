@@ -184,7 +184,8 @@ struct ClientSharedState<H: RouteHandler> {
     origins: RouteOriginTracker,
     handler: Arc<H>,
     subscriptions: RwLock<HashSet<Vni>>,
-    announced_routes: RouteTable,
+    /// Routes announced by this client, shared with peer tasks for re-announcement.
+    announced_routes: Arc<RwLock<RouteTable>>,
 }
 
 /// Wrapper handler that intercepts route updates and deduplicates.
@@ -311,11 +312,12 @@ impl<H: RouteHandler> MetalBondClient<H> {
         assert!(!servers.is_empty(), "at least one server address required");
 
         let handler = Arc::new(handler);
+        let announced_routes = Arc::new(RwLock::new(RouteTable::new()));
         let shared = Arc::new(ClientSharedState {
             origins: RouteOriginTracker::new(),
             handler,
             subscriptions: RwLock::new(HashSet::new()),
-            announced_routes: RouteTable::new(),
+            announced_routes: announced_routes.clone(),
         });
 
         let mut peers = HashMap::new();
@@ -332,7 +334,7 @@ impl<H: RouteHandler> MetalBondClient<H> {
             let (peer, task) = Peer::new(
                 addr.to_string(),
                 Arc::new(wrapper),
-                shared.announced_routes.clone(),
+                announced_routes.clone(),
             );
             peers.insert(server_id, peer);
             server_addrs.insert(server_id, addr.to_string());
@@ -573,17 +575,14 @@ impl<H: RouteHandler> MetalBondClient<H> {
         destination: Destination,
         next_hop: NextHop,
     ) -> Result<()> {
-        if self
-            .shared
-            .announced_routes
-            .next_hop_exists(vni, &destination, &next_hop)
+        // Check and add to announced routes atomically
         {
-            return Err(Error::RouteAlreadyAnnounced);
-        }
-
-        self.shared
-            .announced_routes
-            .add_next_hop(vni, destination.clone(), next_hop.clone());
+            let mut routes = self.shared.announced_routes.write().await;
+            if routes.next_hop_exists(vni, &destination, &next_hop) {
+                return Err(Error::RouteAlreadyAnnounced);
+            }
+            routes.add_next_hop(vni, destination.clone(), next_hop.clone());
+        } // Lock released
 
         let msg = Message::Update {
             action: Action::Add,
@@ -624,17 +623,14 @@ impl<H: RouteHandler> MetalBondClient<H> {
         destination: Destination,
         next_hop: NextHop,
     ) -> Result<()> {
-        if !self
-            .shared
-            .announced_routes
-            .next_hop_exists(vni, &destination, &next_hop)
+        // Check and remove from announced routes atomically
         {
-            return Err(Error::RouteNotFound);
-        }
-
-        self.shared
-            .announced_routes
-            .remove_next_hop(vni, &destination, &next_hop);
+            let mut routes = self.shared.announced_routes.write().await;
+            if !routes.next_hop_exists(vni, &destination, &next_hop) {
+                return Err(Error::RouteNotFound);
+            }
+            routes.remove_next_hop(vni, &destination, &next_hop);
+        } // Lock released
 
         let msg = Message::Update {
             action: Action::Remove,
@@ -671,8 +667,8 @@ impl<H: RouteHandler> MetalBondClient<H> {
     }
 
     /// Returns all announced routes.
-    pub fn get_announced_routes(&self) -> Vec<(Vni, Route)> {
-        self.shared.announced_routes.get_all_routes()
+    pub async fn get_announced_routes(&self) -> Vec<(Vni, Route)> {
+        self.shared.announced_routes.read().await.get_all_routes()
     }
 
     /// Returns the number of unique routes tracked across all servers.
